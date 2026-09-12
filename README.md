@@ -3,13 +3,22 @@
 Identity configuration managed the same way as infrastructure: typed Terraform
 modules, deployable stacks, values-only tenant cells, and a release train that
 promotes a change from the first tenant to the gated one through a human approval.
-Three providers, one layout: Okta authentication policy, Entra ID (app registrations,
-Conditional Access, PIM for groups and directory roles), and Azure resource RBAC
-(custom roles, PIM policies, eligibilities).
+Four providers, one layout: Okta authentication policy, Entra ID (app registrations,
+Conditional Access, PIM for groups and directory roles, and federation to AWS),
+Azure resource RBAC (custom roles, PIM policies, eligibilities), and AWS IAM
+Identity Center (permission sets and group assignments, in commercial and GovCloud).
 
 This is a portfolio repository by Adam Fields. It exists to show design decisions and
 the reasoning behind them, not to be a feature-complete wrapper for any provider.
 Every name, CIDR, and ID in it is a placeholder.
+
+## History
+
+The patterns here were developed and used separately over several years, on
+different engagements and against different tenants. This repository
+consolidates them into one layout with one set of conventions and was assembled
+and published in one pass, which is why the early commit history is compact. The
+decision records carry the reasoning that the commits do not.
 
 ## What it manages
 
@@ -27,8 +36,11 @@ Every name, CIDR, and ID in it is a placeholder.
 | Custom Azure RBAC role definitions, scopes resolved by name | `modules/azure/rbac-role-definition` | `azurerm_role_definition` |
 | PIM role management policies per (scope, role): activation window, MFA, approval, expiration | `modules/azure/pim-role-policy` | `azurerm_role_management_policy` |
 | PIM eligible assignments for Entra groups, by group, role, and scope name | `modules/azure/pim-eligible-assignment` | `azurerm_pim_eligible_role_assignment` |
+| AWS IAM Identity Center gallery app: SAML, signing certificate, group assignments, SCIM provisioning | `modules/entra/aws-identity-center-app` | `azuread_application`, `azuread_service_principal`, `azuread_service_principal_token_signing_certificate`, `azuread_app_role_assignment`, `azuread_synchronization_secret`, `azuread_synchronization_job` |
+| Identity Center permission sets with partition-aware managed policies, inline policy, and boundary | `modules/aws/permission-set` | `aws_ssoadmin_permission_set`, `aws_ssoadmin_managed_policy_attachment`, `aws_ssoadmin_customer_managed_policy_attachment`, `aws_ssoadmin_permission_set_inline_policy`, `aws_ssoadmin_permissions_boundary_attachment` |
+| Identity Center account assignments parsed from `AWS-<PARTITION>-<accountId>-<PermissionSetName>` group names | `modules/aws/account-assignment` | `aws_ssoadmin_account_assignment` |
 
-Six stacks compose those modules into deployable units:
+Eight stacks compose those modules into deployable units:
 
 | Stack | Composes | Cells |
 |-------|----------|-------|
@@ -38,10 +50,14 @@ Six stacks compose those modules into deployable units:
 | `stacks/entra-pim-governance` | role-assignable groups, PIM for groups policies, and Entra role eligibilities | `tenants/azure/{corp,subsidiary}/entra-pim-governance` |
 | `stacks/azure-rbac-roles` | custom role definitions only | `tenants/azure/corp/azure-rbac-roles` |
 | `stacks/azure-pim-governance` | PIM policies, then eligibilities, in that order | `tenants/azure/{corp,subsidiary}/azure-pim-governance` |
+| `stacks/entra-aws-federation` | one Identity Center gallery app per AWS partition, fed from one list of convention-named groups | `tenants/azure/corp/entra-aws-federation` |
+| `stacks/aws-identity-center` | permission sets, then account assignments, one assignment per group name | `tenants/aws/{commercial,govcloud}/aws-identity-center` |
 
 The subsidiary tenant has no `entra-app-registrations` cell because application
-onboarding is confined to corp, and no `azure-rbac-roles` cell because it assigns built-in
-roles only. Nothing is stubbed to make the tenants look symmetrical.
+onboarding is confined to corp, no `azure-rbac-roles` cell because it assigns built-in
+roles only, and no `entra-aws-federation` cell because corp is the identity source
+for every Identity Center instance. Nothing is stubbed to make the tenants look
+symmetrical.
 
 ## Layout
 
@@ -49,15 +65,18 @@ roles only. Nothing is stubbed to make the tenants look symmetrical.
 identity-as-code/
   modules/
     okta/                       network-zone, session-policy, mfa-policy, password-policy
-    entra/                      app registration, Conditional Access, and PIM for groups building blocks
+    entra/                      app registration, Conditional Access, PIM for groups, and AWS Identity Center app building blocks
     azure/                      rbac-role-definition, pim-role-policy, pim-eligible-assignment
+    aws/                        permission-set, account-assignment
   stacks/                       units of deployment: compose modules, resolve names to IDs
     okta-config/
     entra-app-registrations/
     entra-conditional-access/
     entra-pim-governance/
+    entra-aws-federation/
     azure-rbac-roles/
     azure-pim-governance/
+    aws-identity-center/
   tenants/
     okta/                       one directory per tenant, values only, Terragrunt wiring
       root.hcl                  S3 state, Okta provider generation, adoption hook
@@ -69,14 +88,20 @@ identity-as-code/
         azure-rbac-roles/terragrunt.hcl
         azure-pim-governance/terragrunt.hcl
         entra-app-registrations/terragrunt.hcl
+        entra-aws-federation/terragrunt.hcl
         entra-conditional-access/terragrunt.hcl
         entra-pim-governance/terragrunt.hcl
       subsidiary/
         azure-pim-governance/terragrunt.hcl
-        entra-app-registrations/terragrunt.hcl
         entra-conditional-access/terragrunt.hcl
         entra-pim-governance/terragrunt.hcl
-  .github/workflows/            PR validation and release trains: okta-* (dev -> prod), azure-* (corp -> subsidiary)
+    aws/                        one directory per partition, one cell per stack inside it
+      root.hcl                  S3 state per partition, aws provider generation, adoption hook
+      commercial/
+        aws-identity-center/terragrunt.hcl
+      govcloud/
+        aws-identity-center/terragrunt.hcl
+  .github/workflows/            PR validation and release trains: okta-* (dev -> prod), azure-* (corp -> subsidiary), aws-* (commercial -> govcloud)
   scripts/                      PowerShell helpers to adopt an existing tenant and export drift
   tests/                        zero-change import gate
   docs/                         architecture diagrams and decision records
@@ -97,9 +122,27 @@ radii. They live in separate stacks with separate state files, and the second
 refers to the first by role name only. A tenant with no custom roles has no roles
 cell. See [ADR 0005](docs/adr/0005-definitions-and-assignments-in-separate-cells.md).
 
+**The group name is the AWS assignment.** Every AWS access group is named
+`AWS-<PARTITION>-<accountId>-<PermissionSetName>`. On the Entra side that name
+decides which Identity Center gallery application the group is assigned to, and
+therefore which instance SCIM provisions it into. On the AWS side the
+account-assignment module parses the same name into "this permission set, in
+this account, for this group" and refuses a group for the wrong partition or for
+a permission set the cell does not define. An access reviewer reading the group
+name in Entra knows what it grants without opening AWS, and provisioning and
+assignment derive from one artifact, so they cannot disagree. Users are never
+assigned directly. See [ADR 0008](docs/adr/0008-entra-id-as-the-identity-source-for-aws.md).
+
+**Commercial and GovCloud are cells of one stack.** The partition is read from
+`data.aws_partition` at plan time, managed policy ARNs are built from it, and a
+cell says only which region it is. State bucket and OIDC role are per partition
+and arrive through the environment. See
+[ADR 0009](docs/adr/0009-partition-aware-aws-cells.md).
+
 **Path is environment, via Terragrunt.** `tenants/okta/dev`, `tenants/okta/prod`,
-`tenants/azure/corp`, and `tenants/azure/subsidiary` are the only places those words
-appear. There is no `environment` variable threaded through modules and no
+`tenants/azure/corp`, `tenants/azure/subsidiary`, `tenants/aws/commercial`, and
+`tenants/aws/govcloud` are the only places those words appear. There is no
+`environment` variable threaded through modules and no
 `count = var.is_prod ? 1 : 0` anywhere. Adding a tenant is adding a directory.
 
 **Tenant cells hold values only.** A tenant `terragrunt.hcl` has an include, a source,
@@ -111,8 +154,10 @@ See [ADR 0002](docs/adr/0002-values-only-tenant-cells.md).
 `key = "<tree>/${path_relative_to_include()}/terraform.tfstate"`, so
 `tenants/okta/prod` writes `okta/prod/terraform.tfstate` and
 `tenants/azure/corp/azure-pim-governance` writes
-`azure/corp/azure-pim-governance/terraform.tfstate`. Nobody types a state key, so
-nobody can point two cells at the same one.
+`azure/corp/azure-pim-governance/terraform.tfstate`, and
+`tenants/aws/govcloud/aws-identity-center` writes
+`aws/govcloud/aws-identity-center/terraform.tfstate` into the GovCloud bucket.
+Nobody types a state key, so nobody can point two cells at the same one.
 
 **Azure state lives in Azure Storage, with no storage keys.** The Azure tree keeps
 state in a blob container authenticated with the same Entra token the providers use
@@ -127,13 +172,19 @@ uses GitHub OIDC against a federated credential on an app or user-assigned ident
 there is no client secret because none exists. The Okta API token is a GitHub
 environment secret that reaches the provider only through the `OKTA_API_TOKEN`
 environment variable, which the provider reads natively. It is never written to a
-generated file, a plan artifact, or state. See
-[ADR 0003](docs/adr/0003-no-long-lived-secrets-in-ci.md).
+generated file, a plan artifact, or state. AWS Identity Center access uses the
+same OIDC pattern with a role per partition. The one credential that is a
+credential by nature, the SCIM token the AWS console issues, reaches Terraform as
+a sensitive `TF_VAR` from a GitHub environment secret and appears in no file;
+where the provider stores it is stated rather than hidden. See
+[ADR 0003](docs/adr/0003-no-long-lived-secrets-in-ci.md) and
+[ADR 0008](docs/adr/0008-entra-id-as-the-identity-source-for-aws.md).
 
 **Promotion is gated, first tenant before the second.** A merge to `main` plans and
-applies dev (Okta) or corp (Azure), then stops at a gate. The gate is a GitHub
-environment with required reviewers and a wait timer. When a human approves, prod
-or subsidiary applies the exact plan file that was produced at merge time. If that
+applies dev (Okta), corp (Azure), or commercial (AWS), then stops at a gate. The
+gate is a GitHub environment with required reviewers and a wait timer. When a
+human approves, prod, subsidiary, or GovCloud applies the exact plan file that
+was produced at merge time. If that
 state moved in the meantime, Terraform refuses the stale plan and the release is
 re-run rather than applied blind. The Azure train additionally applies the corp
 roles cell before planning the corp governance cell, because the latter resolves
@@ -145,7 +196,9 @@ Prerequisites: Terraform 1.9 or later and Terragrunt 0.77 or later. For the Okta
 tree, an S3 bucket and DynamoDB table for state and an Okta API token with policy
 and zone scopes. For the Azure tree, a storage account and container for state with
 shared key access disabled, `az login` as an identity that holds Storage Blob Data
-Contributor on the container and the RBAC needed at the scopes you manage.
+Contributor on the container and the RBAC needed at the scopes you manage. For the
+AWS tree, an S3 bucket and DynamoDB table per partition and an SSO session or
+profile in each partition's Identity Center delegated administrator account.
 
 Okta:
 
@@ -179,6 +232,36 @@ terragrunt plan
 `tenants/azure/root.hcl`; no cell contains either value. Switching tenants is
 `az login` to the other tenant and re-exporting the two variables.
 
+The `entra-aws-federation` cell additionally needs the SCIM credentials the AWS
+console issued, as a sensitive map keyed by target. They are never in a file:
+
+```bash
+export TF_VAR_scim_credentials='{
+  commercial = { base_address = "https://scim.us-east-1.amazonaws.com/CHANGEME/scim/v2", secret_token = "CHANGEME" }
+  govcloud   = { base_address = "https://scim.us-gov-west-1.amazonaws.com/CHANGEME/scim/v2", secret_token = "CHANGEME" }
+}'
+```
+
+AWS Identity Center:
+
+```bash
+aws sso login --profile CHANGEME-identity-center-admin
+export AWS_PROFILE=CHANGEME-identity-center-admin
+export TG_AWS_STATE_BUCKET=CHANGEME-tfstate-commercial
+export TG_AWS_STATE_REGION=us-east-1
+export TG_AWS_LOCK_TABLE=CHANGEME-tflock
+
+cd tenants/aws/commercial/aws-identity-center
+terragrunt init
+terragrunt plan
+```
+
+The GovCloud cell is the same commands with a GovCloud profile, a GovCloud bucket,
+and `TG_AWS_STATE_REGION=us-gov-west-1`. Nothing in HCL changes; the modules read
+the partition from the credentials they are given. Plan the Entra federation cell
+first for a new instance: the AWS cell resolves groups by display name in the
+identity store, and they exist there only after SCIM has provisioned them.
+
 To adopt an existing tenant instead of creating policies from scratch:
 
 1. Run `scripts/Import-OktaPolicies.ps1` against the tenant. It emits `imports.tf`
@@ -199,9 +282,17 @@ To adopt an existing tenant instead of creating policies from scratch:
   that is a design conversation, not a map entry.
 - The management group hierarchy and subscriptions themselves. The Azure stacks
   resolve them by name and never create one.
-- Provisioning the S3 bucket, DynamoDB table, AWS OIDC role, Azure storage
-  account, federated credentials, and GitHub environments. That is platform
-  bootstrap and lives in a separate repository.
+- The AWS organization and its accounts, the Identity Center instances, and the
+  customer managed IAM policies a permission set may reference by name.
+- Switching an Identity Center instance's identity source to Entra ID and
+  enabling automatic provisioning. Both are one-shot console steps with no API
+  Terraform can drive; the federation module README gives the order and the
+  stack consumes their outputs.
+- Users and groups in the Identity Center identity store. SCIM from Entra owns
+  them, and the AWS stack only ever looks a group up by display name.
+- Provisioning the S3 buckets, DynamoDB tables, AWS OIDC roles (one set per
+  partition), Azure storage account, federated credentials, and GitHub
+  environments. That is platform bootstrap and lives in a separate repository.
 
 ## Verification status
 
@@ -219,6 +310,20 @@ attribute names and block shapes are checked against the real provider schema. T
 committed `.terraform.lock.hcl` files record the exact versions. What validate cannot
 check, and what a first plan against a real tenant should confirm, is import ID
 formats and the API's own rules such as the allowed PIM expiration values.
+
+The AWS tree (`modules/aws/*`, `stacks/aws-identity-center`) and the Entra
+federation pieces (`modules/entra/aws-identity-center-app`,
+`stacks/entra-aws-federation`) were written the same way, with Terraform 1.16, and
+pass `terraform init -backend=false` and `terraform validate` against the pinned
+providers (aws 6.x, azuread 3.x). The Terragrunt root's generated provider block
+was rendered through Terraform's template engine to confirm the conditional
+`assume_role` output. Four things validate cannot check and a first apply should:
+that the gallery template is found under the display name the module defaults to,
+that the instantiated service principal publishes a `User` app role (the module
+falls back to the default role ID and otherwise fails with the list), that the
+synchronization template the gallery application publishes is `aws` (the module
+README says how to list it), and that the provider leaves the template's SAML
+settings alone when `identifier_uris` and `reply_urls` are set.
 
 ## License
 

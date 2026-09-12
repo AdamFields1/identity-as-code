@@ -1,0 +1,293 @@
+# Release train for the AWS identity-as-code tree.
+#
+#   push to main
+#     |-- plan-commercial ---> apply-commercial
+#     |                               \
+#     |-- plan-govcloud (merge-time plan, saved as artifact)
+#                 \                     \
+#                  govcloud-gate (environment: govcloud, reviewers + wait timer)
+#                       |
+#                  apply-govcloud (environment: govcloud-apply, applies the merge-time plan)
+#
+# Commercial is the first partition, the way dev is for Okta and corp is for
+# Azure. GovCloud is the gated one. Its plan is taken at merge time and saved;
+# the reviewer approves that exact plan. If GovCloud state moves between merge
+# and approval, Terraform refuses the stale plan and the release must be
+# re-run, which is the safe failure.
+#
+# The two partitions share nothing at runtime: different OIDC roles (a GovCloud
+# role ARN starts arn:aws-us-gov), different state buckets (a GovCloud identity
+# cannot write to a commercial bucket), different Identity Center instances.
+# They share the stack, the modules, and this workflow shape. See docs/adr/0009.
+#
+# Credentials: AWS via GitHub OIDC (aws-actions/configure-aws-credentials with
+# a role ARN from a repository variable, no access keys). See docs/adr/0003.
+#
+# Environments (configured in repository settings, no secrets in this repo).
+# AWS_PLAN_ROLE_ARN, AWS_APPLY_ROLE_ARN, TG_AWS_STATE_BUCKET, TG_AWS_STATE_REGION,
+# and TG_AWS_LOCK_TABLE are repository variables that each environment
+# overrides with its own partition's role and bucket:
+#   commercial-plan    reader role in the commercial delegated admin account, plan only
+#   commercial         writer role in the commercial delegated admin account
+#   govcloud-plan      reader role in the GovCloud delegated admin account, plan only
+#   govcloud           no identity; carries the required reviewers and the wait timer
+#   govcloud-apply     writer role in the GovCloud delegated admin account; deployment branch policy: main only
+#
+# The writer role lives in govcloud-apply rather than govcloud so the reviewer
+# approves once, at the gate. apply-govcloud cannot start without govcloud-gate
+# succeeding.
+
+name: aws-release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "modules/aws/**"
+      - "stacks/aws-*/**"
+      - "tenants/aws/**"
+      - ".github/workflows/aws-release.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.9.8"
+  TG_VERSION: "0.77.0"
+  TF_IN_AUTOMATION: "true"
+  TG_NON_INTERACTIVE: "true"
+  PLAN_DIR: ${{ github.workspace }}/plans
+
+# Releases queue behind each other and are never cancelled mid-apply.
+concurrency:
+  group: aws-release-main
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  plan-commercial:
+    name: plan commercial/aws-identity-center
+    # Skip the whole train until the repo variables for the state backend exist.
+    # Without this guard every push to main would fail on a portfolio repo that
+    # has no live backend behind it. Downstream jobs inherit the skip through needs.
+    if: vars.TG_AWS_STATE_BUCKET != ''
+    runs-on: ubuntu-latest
+    environment: commercial-plan
+    concurrency:
+      group: aws-cell-commercial-aws-identity-center
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-plan-commercial-${{ github.run_id }}
+      - name: terragrunt plan
+        working-directory: tenants/aws/commercial/aws-identity-center
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/commercial-aws-identity-center.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/commercial-aws-identity-center.tfplan" > "$PLAN_DIR/commercial-aws-identity-center.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aws-plan-commercial-aws-identity-center-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/commercial-aws-identity-center.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-commercial:
+    name: apply commercial/aws-identity-center
+    needs: [plan-commercial]
+    runs-on: ubuntu-latest
+    environment: commercial
+    concurrency:
+      group: aws-cell-commercial-aws-identity-center
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-apply-commercial-${{ github.run_id }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: aws-plan-commercial-aws-identity-center-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/aws/commercial/aws-identity-center
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/commercial-aws-identity-center.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-govcloud:
+    name: plan govcloud/aws-identity-center (merge-time)
+    # Same backend guard as plan-commercial; this job has no needs, so it must
+    # carry its own. The govcloud-plan environment overrides every variable
+    # below with the GovCloud partition's values.
+    if: vars.TG_AWS_STATE_BUCKET != ''
+    runs-on: ubuntu-latest
+    environment: govcloud-plan
+    concurrency:
+      group: aws-cell-govcloud-aws-identity-center
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-plan-govcloud-${{ github.run_id }}
+      - name: terragrunt plan
+        working-directory: tenants/aws/govcloud/aws-identity-center
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/govcloud-aws-identity-center.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/govcloud-aws-identity-center.tfplan" > "$PLAN_DIR/govcloud-aws-identity-center.txt"
+          terragrunt show -json "$PLAN_DIR/govcloud-aws-identity-center.tfplan" > "$PLAN_DIR/govcloud-aws-identity-center.json"
+      - name: Plan summary
+        run: |
+          set -euo pipefail
+          json="$PLAN_DIR/govcloud-aws-identity-center.json"
+          add=$(jq '[.resource_changes[]? | select(.change.actions | index("create"))] | length' "$json")
+          change=$(jq '[.resource_changes[]? | select(.change.actions | index("update"))] | length' "$json")
+          destroy=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' "$json")
+          {
+            echo "### GovCloud plan taken at merge (${{ github.sha }})"
+            echo "Add: $add, Change: $change, Destroy: $destroy"
+            echo ""
+            echo "This exact plan file is what apply-govcloud will run after the gate."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aws-plan-govcloud-aws-identity-center-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/govcloud-aws-identity-center.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  govcloud-gate:
+    name: gate (govcloud)
+    needs: [apply-commercial, plan-govcloud]
+    runs-on: ubuntu-latest
+    # The "govcloud" environment carries required reviewers and a wait timer
+    # (Settings -> Environments -> govcloud -> Deployment protection rules).
+    # The wait timer is the primary soak; the SOAK_MINUTES sleep below is a
+    # belt-and-braces fallback for repositories that have not set the timer.
+    environment: govcloud
+    steps:
+      - name: Soak checklist
+        run: |
+          cat <<'EOF'
+          Commercial has been applied. Before approving GovCloud, confirm:
+            1. A member of a commercial group can open the AWS access portal from
+               My Apps, sees the expected accounts, and the session ends at the
+               permission set's session duration.
+            2. The permission sets appear in the commercial Identity Center console
+               with the expected policies, and every assigned account shows
+               "Provisioned", not "Failed".
+            3. No group referenced by the commercial cell is missing from the identity
+               store (SCIM from the corp Entra tenant is healthy).
+            4. The GovCloud plan artifact (aws-plan-govcloud-aws-identity-center-<sha>)
+               shows the expected change set and no destroys you did not intend.
+          EOF
+      - name: Documented wait
+        env:
+          SOAK_MINUTES: ${{ vars.SOAK_MINUTES || '0' }}
+        run: |
+          set -euo pipefail
+          echo "Soaking for ${SOAK_MINUTES} minute(s) beyond the environment wait timer."
+          sleep "$(( SOAK_MINUTES * 60 ))"
+
+  # ---------------------------------------------------------------------------
+  apply-govcloud:
+    name: apply govcloud/aws-identity-center
+    needs: [govcloud-gate]
+    runs-on: ubuntu-latest
+    environment: govcloud-apply
+    concurrency:
+      group: aws-cell-govcloud-aws-identity-center
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-apply-govcloud-${{ github.run_id }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: aws-plan-govcloud-aws-identity-center-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (merge-time plan)
+        working-directory: tenants/aws/govcloud/aws-identity-center
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          # A stale plan (state changed since merge) makes this fail. That is intended:
+          # re-run the release so a fresh plan goes back through the gate.
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/govcloud-aws-identity-center.tfplan"

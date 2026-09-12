@@ -17,11 +17,16 @@ flowchart LR
       ESG[security-group]
       EPP[pim-role-policy]
       EPE[pim-eligibility]
+      EAI[aws-identity-center-app]
     end
     subgraph mazure["modules/azure"]
       ARD[rbac-role-definition]
       APP[pim-role-policy]
       APE[pim-eligible-assignment]
+    end
+    subgraph maws["modules/aws"]
+      WPS[permission-set]
+      WAA[account-assignment]
     end
   end
 
@@ -30,8 +35,10 @@ flowchart LR
     SEA[entra-app-registrations]
     SEC[entra-conditional-access]
     SEP[entra-pim-governance]
+    SEF[entra-aws-federation]
     SAR[azure-rbac-roles]
     SAP[azure-pim-governance]
+    SWI[aws-identity-center]
   end
 
   subgraph tokta["tenants/okta (values only)"]
@@ -46,11 +53,19 @@ flowchart LR
     SUB[subsidiary/*]
   end
 
+  subgraph taws["tenants/aws (values only, one cell per partition)"]
+    RW[root.hcl]
+    COMM[commercial/*]
+    GOVC[govcloud/*]
+  end
+
   subgraph pipelines[".github/workflows"]
     OPR[okta-pr-validation]
     OREL[okta-release]
     APR[azure-pr-validation]
     AREL[azure-release]
+    WPR[aws-pr-validation]
+    WREL[aws-release]
   end
 
   NZ --> SO
@@ -62,26 +77,33 @@ flowchart LR
   ESG --> SEP
   EPP --> SEP
   EPE --> SEP
+  EAI --> SEF
   ARD --> SAR
   APP --> SAP
   APE --> SAP
+  WPS --> SWI
+  WAA --> SWI
 
   SO --> DEV
   SO --> PROD
   SEA --> CORP
   SEC --> CORP
   SEP --> CORP
+  SEF --> CORP
   SAR --> CORP
   SAP --> CORP
-  SEA --> SUB
   SEC --> SUB
   SEP --> SUB
   SAP --> SUB
+  SWI --> COMM
+  SWI --> GOVC
 
   RO -.include.-> DEV
   RO -.include.-> PROD
   RA -.include.-> CORP
   RA -.include.-> SUB
+  RW -.include.-> COMM
+  RW -.include.-> GOVC
 
   DEV --> OPR
   PROD --> OPR
@@ -91,17 +113,26 @@ flowchart LR
   SUB --> APR
   CORP --> AREL
   SUB --> AREL
+  COMM --> WPR
+  GOVC --> WPR
+  COMM --> WREL
+  GOVC --> WREL
 ```
 
 Dependencies only point one way. Modules know nothing about stacks. Stacks know
 nothing about tenants. Tenants know nothing about pipelines. A change at any layer
 is reviewed in the layer where it happens.
 
-Two things are deliberately absent from the diagram. `azure-rbac-roles` has no
+Three things are deliberately absent from the diagram. `azure-rbac-roles` has no
 edge to `azure-pim-governance`: the governance stack refers to custom roles by
 display name and resolves them at plan time, so the coupling is a name, not an
-output (ADR 0005). And `subsidiary/*` has no `azure-rbac-roles` cell, because the
-subsidiary assigns built-in roles only.
+output (ADR 0005). `subsidiary/*` has no `azure-rbac-roles`,
+`entra-app-registrations`, or `entra-aws-federation` cell, because the subsidiary
+assigns built-in roles only, registers no applications, and reaches AWS through
+corp groups. And `entra-aws-federation` has no edge to `aws-identity-center`
+even though one feeds the other: the coupling is the group name
+`AWS-<PARTITION>-<accountId>-<PermissionSetName>`, listed in both cells and
+resolved on each side at plan time (ADR 0008), not a cross-cloud dependency.
 
 ## Inside the stack
 
@@ -164,6 +195,52 @@ roles cell is applied before the governance cell plans because the role name is
 resolved at plan time. Every scope, role, and group is given by name in the tenant
 cell, so no cell ever contains a GUID or a management group ID.
 
+## Across the two clouds: Entra to Identity Center
+
+```mermaid
+flowchart LR
+  subgraph corp["tenants/azure/corp/entra-aws-federation (one cell)"]
+    GL["aws_groups\nAWS-COM-111111111111-PlatformAdmin\nAWS-COM-222222222222-PowerUser\nAWS-GOV-111111111111-PlatformAdmin\nAWS-GOV-333333333333-ReadOnly"]
+    AGC["data azuread_group (by display name)"]
+    APPC["module identity_center[commercial]\ngallery app, SAML, cert,\napp role assignments, SCIM job"]
+    APPG["module identity_center[govcloud]\ngallery app, SAML, cert,\napp role assignments, SCIM job"]
+    GL -->|AWS-COM-*| APPC
+    GL -->|AWS-GOV-*| APPG
+    AGC --> APPC
+    AGC --> APPG
+  end
+
+  subgraph comm["tenants/aws/commercial/aws-identity-center"]
+    ISC["data aws_identitystore_group (by DisplayName)"]
+    PSC["module permission_sets\naws_ssoadmin_permission_set + attachments"]
+    AAC["module account_assignments\nparse name -> account, set\naws_ssoadmin_account_assignment"]
+    ISC --> AAC
+    PSC -->|ARNs by name| AAC
+  end
+
+  subgraph gov["tenants/aws/govcloud/aws-identity-center"]
+    ISG["data aws_identitystore_group (by DisplayName)"]
+    PSG["module permission_sets\npartition from data aws_partition"]
+    AAG["module account_assignments\nrejects AWS-COM-* here"]
+    ISG --> AAG
+    PSG -->|ARNs by name| AAG
+  end
+
+  APPC -.SCIM, same display names.-> ISC
+  APPG -.SCIM, same display names.-> ISG
+```
+
+The Entra cell lists every AWS access group once; the stack hands each
+Identity Center application the groups whose partition token matches. Being
+assigned to the application is what provisions a group, over SCIM, into that
+instance's identity store. The AWS cell for the same instance lists the same
+names and parses each into one account assignment. The two cells are in
+different trees with different state backends and different credentials, and
+nothing passes between them at plan time; the group name is the whole contract,
+checked on both sides (ADR 0008). The identity source switch and the SCIM
+enablement in the AWS console are manual and one-shot, and the module README
+gives the order.
+
 ## State key scheme
 
 `tenants/okta/root.hcl` derives the key from the tenant's path:
@@ -200,6 +277,24 @@ Resource group, storage account, and container are `TG_AZ_STATE_RG`,
 `TG_AZ_STATE_SA`, and `TG_AZ_STATE_CONTAINER`. The backend authenticates with the
 Entra token (`use_azuread_auth`), so no storage key exists anywhere in the flow
 (ADR 0004). Locking uses blob leases; there is no lock table.
+
+`tenants/aws/root.hcl` is S3 again, with its own variable names because the bucket
+is per partition rather than shared with the Okta tree:
+
+```
+key = "aws/${path_relative_to_include()}/terraform.tfstate"
+```
+
+| Cell directory | State key | Bucket |
+|----------------|-----------|--------|
+| `tenants/aws/commercial/aws-identity-center` | `aws/commercial/aws-identity-center/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
+| `tenants/aws/govcloud/aws-identity-center` | `aws/govcloud/aws-identity-center/terraform.tfstate` | GovCloud `TG_AWS_STATE_BUCKET` |
+
+`TG_AWS_STATE_BUCKET`, `TG_AWS_STATE_REGION`, and `TG_AWS_LOCK_TABLE` are set per
+GitHub environment, because a GovCloud identity cannot reach a commercial bucket
+and the reverse. The keys do not collide, so the two could share a bucket if the
+partitions ever did (ADR 0009). Locking is DynamoDB because the repository allows
+Terraform 1.9, which predates the S3 lock file.
 
 ## Promotion flow
 
@@ -245,6 +340,14 @@ and applied unchanged after the `subsidiary` environment gate. Concurrency group
 are per cell (`azure-cell-corp-azure-pim-governance`), not per tenant, because two
 cells of one tenant have separate state files and can safely run side by side.
 
+`aws-release` has the same shape with commercial in the dev position and GovCloud
+in the prod position. Each job names its GitHub environment, and the environment
+supplies that partition's OIDC role and state bucket, so the two halves of the
+train never hold a credential that works in the other partition. The federation
+cell on the Azure side is not in any release train yet: the Azure workflows do
+not map the SCIM credentials into `TF_VAR_scim_credentials`, and until they do
+that cell is applied from a workstation (ADR 0008).
+
 ## Secrets and identity in CI
 
 | Need | Mechanism | Lifetime |
@@ -253,12 +356,20 @@ cells of one tenant have separate state files and can safely run side by side.
 | Talk to Okta | GitHub environment secret `OKTA_API_TOKEN` exposed as an env var to the provider | Job |
 | Read/write state in Azure Storage | GitHub OIDC -> `azure/login@v2` -> federated credential on an app or user-assigned identity; backend uses the Entra token (`use_azuread_auth`) | About an hour |
 | Talk to Azure Resource Manager and Microsoft Graph | Same federated identity; `ARM_USE_OIDC=true` lets the providers do the token exchange themselves | About an hour |
+| Read/write state in S3 and talk to Identity Center, per partition | GitHub OIDC -> `aws-actions/configure-aws-credentials` -> role from the partition's environment variables (`AWS_PLAN_ROLE_ARN`, `AWS_APPLY_ROLE_ARN`) | Minutes |
+| Provision users and groups into Identity Center | SCIM endpoint and token issued by the AWS console, held as a GitHub environment secret, passed as the sensitive `TF_VAR_scim_credentials`; stored by the provider in state and in saved plans, rotated from the AWS console | Until rotated |
 | Comment on PR | Workflow `GITHUB_TOKEN` with `pull-requests: write` | Job |
 
 The Azure identity is split by purpose and tenant. `AZ_CLIENT_ID`, `AZ_TENANT_ID`,
 and `AZ_SUBSCRIPTION_ID` are repository variables that each GitHub environment
 overrides: `corp-plan` and `subsidiary-plan` point at reader identities, `corp` and
 `subsidiary-apply` at writers. No client secret exists for any of them.
+
+The AWS identity is split by purpose and partition the same way. `AWS_PLAN_ROLE_ARN`
+and `AWS_APPLY_ROLE_ARN` are repository variables that each GitHub environment
+overrides: `commercial-plan` and `govcloud-plan` point at reader roles, `commercial`
+and `govcloud-apply` at writers, and the GovCloud ones are `arn:aws-us-gov` roles in
+the GovCloud delegated administrator account.
 
 No credential is written to disk by the pipeline, and no credential lives in the
 repository.
