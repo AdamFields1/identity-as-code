@@ -1,0 +1,298 @@
+# PR validation for the Azure identity-as-code tree (tenants/azure, which holds
+# both the Azure RBAC/PIM cells and the Entra cells).
+#
+# Static checks run on every PR that touches Terraform or Terragrunt under the
+# Azure and Entra paths. A speculative plan runs only for cells affected by the
+# change: a cell whose own directory changed, or every cell when shared code
+# (modules, stacks, root.hcl) changed.
+#
+# Credentials: Azure via GitHub OIDC (azure/login@v2 with a federated credential
+# on an app or user-assigned identity, no client secret). The state backend
+# uses the same token with Entra auth, so no storage account key exists in
+# this pipeline. See docs/adr/0004.
+#
+# Identity per environment: AZ_CLIENT_ID, AZ_TENANT_ID, and AZ_SUBSCRIPTION_ID
+# are repository variables. A "<tenant>-plan" environment overrides them with
+# that tenant's reader identity, so a PR plan can read RBAC and PIM but cannot
+# write. GitHub resolves vars.X to the environment value when one exists.
+#
+# Plans run one job per cell instead of a single `terragrunt run --all plan` so
+# each cell gets its own artifact, its own PR comment, and its own concurrency
+# group. The result is the same set of plans with better attribution.
+
+name: azure-pr-validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "modules/azure/**"
+      - "modules/entra/**"
+      - "stacks/azure-*/**"
+      - "stacks/entra-*/**"
+      - "tenants/azure/**"
+      - ".tflint.hcl"
+      - ".github/workflows/azure-pr-validation.yml"
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  TF_VERSION: "1.9.8"
+  TG_VERSION: "0.77.0"
+  TF_IN_AUTOMATION: "true"
+  TG_NON_INTERACTIVE: "true"
+
+concurrency:
+  group: azure-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: fmt, tflint, checkov, validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+          terragrunt --version
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      - name: terragrunt hclfmt
+        run: terragrunt hclfmt --check
+
+      - name: Setup tflint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: tflint
+        run: |
+          set -euo pipefail
+          tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
+          tflint --recursive --config "$GITHUB_WORKSPACE/.tflint.hcl" --format compact
+
+      - name: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          quiet: true
+          skip_path: .terragrunt-cache
+          output_format: cli,sarif
+          output_file_path: console,checkov.sarif
+
+      - name: terraform validate (modules and stacks)
+        run: |
+          set -euo pipefail
+          for dir in modules/azure/* modules/entra/* stacks/azure-* stacks/entra-*; do
+            [ -d "$dir" ] || continue
+            echo "::group::validate $dir"
+            terraform -chdir="$dir" init -backend=false -input=false >/dev/null
+            terraform -chdir="$dir" validate
+            echo "::endgroup::"
+          done
+
+  changed-cells:
+    name: Detect affected cells
+    runs-on: ubuntu-latest
+    outputs:
+      cells: ${{ steps.detect.outputs.cells }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect
+        id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          # A cell is tenants/azure/<tenant>/<stack>. %P prints "corp/azure-rbac-roles".
+          all_cells=$(find tenants/azure -mindepth 2 -maxdepth 2 -type d -printf '%P\n' | sort)
+
+          if echo "$changed" | grep -Eq '^(modules/(azure|entra)/|stacks/(azure|entra)-|tenants/azure/root\.hcl|\.github/workflows/azure-pr-validation\.yml)'; then
+            selected="$all_cells"
+          else
+            selected=$(echo "$changed" | grep -E '^tenants/azure/[^/]+/[^/]+/' | cut -d/ -f3-4 | sort -u || true)
+          fi
+
+          # Matrix entries carry the path, a filesystem-safe id for artifact and
+          # concurrency names, and the tenant for the environment lookup.
+          json=$(printf '%s\n' $selected | grep -v '^$' \
+            | jq -R '{path: ., id: (. | gsub("/"; "-")), tenant: (. | split("/")[0])}' \
+            | jq -sc .)
+          echo "Affected cells: $json"
+          echo "cells=$json" >> "$GITHUB_OUTPUT"
+
+  plan:
+    name: plan ${{ matrix.cell.path }}
+    needs: [static-checks, changed-cells]
+    # Plans need the state backend; static checks above do not, so they always run.
+    if: needs.changed-cells.outputs.cells != '[]' && vars.TG_AZ_STATE_SA != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.changed-cells.outputs.cells) }}
+
+    # Reader identity lives in the "<tenant>-plan" environment. Sharing the
+    # per-cell concurrency group with the release workflow means a PR plan never
+    # fights a release apply for the state lock.
+    environment: ${{ matrix.cell.tenant }}-plan
+    concurrency:
+      group: azure-cell-${{ matrix.cell.id }}
+      cancel-in-progress: false
+
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_USE_AZUREAD: "true"
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      TG_AZ_STATE_RG: ${{ vars.TG_AZ_STATE_RG }}
+      TG_AZ_STATE_SA: ${{ vars.TG_AZ_STATE_SA }}
+      TG_AZ_STATE_CONTAINER: ${{ vars.TG_AZ_STATE_CONTAINER || 'tfstate' }}
+      PLAN_DIR: ${{ github.workspace }}/plans
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+
+      - name: terragrunt plan
+        working-directory: tenants/azure/${{ matrix.cell.path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/${{ matrix.cell.id }}.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/${{ matrix.cell.id }}.tfplan" > "$PLAN_DIR/${{ matrix.cell.id }}.txt"
+          terragrunt show -json "$PLAN_DIR/${{ matrix.cell.id }}.tfplan" > "$PLAN_DIR/${{ matrix.cell.id }}.json"
+
+      - name: Summarise plan
+        id: summary
+        run: |
+          set -euo pipefail
+          json="$PLAN_DIR/${{ matrix.cell.id }}.json"
+          add=$(jq '[.resource_changes[]? | select(.change.actions | index("create"))] | length' "$json")
+          change=$(jq '[.resource_changes[]? | select(.change.actions | index("update"))] | length' "$json")
+          destroy=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' "$json")
+          echo "add=$add" >> "$GITHUB_OUTPUT"
+          echo "change=$change" >> "$GITHUB_OUTPUT"
+          echo "destroy=$destroy" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Azure plan: ${{ matrix.cell.path }}"
+            echo "Add: $add, Change: $change, Destroy: $destroy"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-plan-${{ matrix.cell.id }}-pr${{ github.event.pull_request.number }}
+          path: |
+            ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.tfplan
+            ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.txt
+            ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.json
+          retention-days: 7
+
+      - name: Post plan summary as PR comment
+        uses: actions/github-script@v7
+        env:
+          CELL_PATH: ${{ matrix.cell.path }}
+          CELL_ID: ${{ matrix.cell.id }}
+          ADD: ${{ steps.summary.outputs.add }}
+          CHANGE: ${{ steps.summary.outputs.change }}
+          DESTROY: ${{ steps.summary.outputs.destroy }}
+        with:
+          script: |
+            const fs = require('fs');
+            const cellPath = process.env.CELL_PATH;
+            const cellId = process.env.CELL_ID;
+            const marker = `<!-- azure-plan:${cellId} -->`;
+            const planPath = `${process.env.PLAN_DIR}/${cellId}.txt`;
+            let plan = fs.readFileSync(planPath, 'utf8');
+            const limit = 60000;
+            if (plan.length > limit) {
+              plan = plan.slice(0, limit) + '\n\n... truncated, full plan in the workflow artifact ...';
+            }
+            const destroyWarning = process.env.DESTROY !== '0'
+              ? '\n\n**Warning: this plan destroys resources. Review carefully.**'
+              : '';
+            const body = [
+              marker,
+              `### Azure plan for \`${cellPath}\``,
+              `Add: **${process.env.ADD}**, Change: **${process.env.CHANGE}**, Destroy: **${process.env.DESTROY}**${destroyWarning}`,
+              '',
+              '<details><summary>Show plan</summary>',
+              '',
+              '```hcl',
+              plan,
+              '```',
+              '',
+              '</details>',
+              '',
+              `Artifact: \`azure-plan-${cellId}-pr${context.issue.number}\``
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100
+            });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }

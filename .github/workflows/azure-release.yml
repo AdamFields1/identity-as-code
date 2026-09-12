@@ -1,0 +1,384 @@
+# Release train for the Azure identity-as-code tree.
+#
+#   push to main
+#     |-- plan-corp-roles ---> apply-corp-roles ---> plan-corp-pim ---> apply-corp-pim
+#     |                                                                      \
+#     |-- plan-subsidiary-pim (merge-time plan, saved as artifact)            \
+#                 \                                                            \
+#                  subsidiary-gate (environment: subsidiary, reviewers + wait timer)
+#                       |
+#                  apply-subsidiary-pim (environment: subsidiary-apply, applies the merge-time plan)
+#
+# Corp is the first tenant, the way dev is for Okta. Its two cells run in a
+# fixed order because the governance cell resolves custom roles by name at
+# plan time, so the roles cell must be applied before the governance cell can
+# even plan. That is the ordering cost of keeping definitions and assignments
+# in separate cells (docs/adr/0005), paid here rather than in a tenant file.
+#
+# Subsidiary is the gated tenant, the way prod is for Okta. Its plan is taken
+# at merge time and saved; the reviewer approves that exact plan. If subsidiary
+# state moves between merge and approval, Terraform refuses the stale plan and
+# the release must be re-run, which is the safe failure.
+#
+# Credentials: Azure via GitHub OIDC (azure/login@v2 with a federated
+# credential, no client secret). State uses the same Entra token; there is no
+# storage account key anywhere in this pipeline. See docs/adr/0004.
+#
+# Environments (configured in repository settings, no secrets in this repo).
+# AZ_CLIENT_ID, AZ_TENANT_ID, and AZ_SUBSCRIPTION_ID are repository variables
+# that each environment overrides with its own identity and tenant:
+#   corp-plan          reader identity for corp, plan only
+#   corp               writer identity for corp
+#   subsidiary-plan    reader identity for the subsidiary tenant, plan only
+#   subsidiary         no identity; carries the required reviewers and the wait timer
+#   subsidiary-apply   writer identity for the subsidiary; deployment branch policy: main only
+#
+# The writer identity lives in subsidiary-apply rather than subsidiary so the
+# reviewer approves once, at the gate. apply-subsidiary-pim cannot start
+# without subsidiary-gate succeeding.
+
+name: azure-release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "modules/azure/**"
+      - "modules/entra/**"
+      - "stacks/azure-*/**"
+      - "stacks/entra-*/**"
+      - "tenants/azure/**"
+      - ".github/workflows/azure-release.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.9.8"
+  TG_VERSION: "0.77.0"
+  TF_IN_AUTOMATION: "true"
+  TG_NON_INTERACTIVE: "true"
+  ARM_USE_OIDC: "true"
+  ARM_USE_AZUREAD: "true"
+  TG_AZ_STATE_RG: ${{ vars.TG_AZ_STATE_RG }}
+  TG_AZ_STATE_SA: ${{ vars.TG_AZ_STATE_SA }}
+  TG_AZ_STATE_CONTAINER: ${{ vars.TG_AZ_STATE_CONTAINER || 'tfstate' }}
+  PLAN_DIR: ${{ github.workspace }}/plans
+
+# Releases queue behind each other and are never cancelled mid-apply.
+concurrency:
+  group: azure-release-main
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  plan-corp-roles:
+    name: plan corp/azure-rbac-roles
+    # Skip the whole train until the repo variables for the state backend exist.
+    # Without this guard every push to main would fail on a portfolio repo that
+    # has no live backend behind it. Downstream jobs inherit the skip through needs.
+    if: vars.TG_AZ_STATE_SA != ''
+    runs-on: ubuntu-latest
+    environment: corp-plan
+    concurrency:
+      group: azure-cell-corp-azure-rbac-roles
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - name: terragrunt plan
+        working-directory: tenants/azure/corp/azure-rbac-roles
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/corp-azure-rbac-roles.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/corp-azure-rbac-roles.tfplan" > "$PLAN_DIR/corp-azure-rbac-roles.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: azure-plan-corp-azure-rbac-roles-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/corp-azure-rbac-roles.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-corp-roles:
+    name: apply corp/azure-rbac-roles
+    needs: [plan-corp-roles]
+    runs-on: ubuntu-latest
+    environment: corp
+    concurrency:
+      group: azure-cell-corp-azure-rbac-roles
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: azure-plan-corp-azure-rbac-roles-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/azure/corp/azure-rbac-roles
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/corp-azure-rbac-roles.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-corp-pim:
+    name: plan corp/azure-pim-governance
+    # Only after the roles cell has applied: custom roles are resolved by name
+    # at plan time, so a new role and its first eligibility land in one release.
+    needs: [apply-corp-roles]
+    runs-on: ubuntu-latest
+    environment: corp-plan
+    concurrency:
+      group: azure-cell-corp-azure-pim-governance
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - name: terragrunt plan
+        working-directory: tenants/azure/corp/azure-pim-governance
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/corp-azure-pim-governance.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/corp-azure-pim-governance.tfplan" > "$PLAN_DIR/corp-azure-pim-governance.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: azure-plan-corp-azure-pim-governance-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/corp-azure-pim-governance.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-corp-pim:
+    name: apply corp/azure-pim-governance
+    needs: [plan-corp-pim]
+    runs-on: ubuntu-latest
+    environment: corp
+    concurrency:
+      group: azure-cell-corp-azure-pim-governance
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: azure-plan-corp-azure-pim-governance-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/azure/corp/azure-pim-governance
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/corp-azure-pim-governance.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-subsidiary-pim:
+    name: plan subsidiary/azure-pim-governance (merge-time)
+    # Same backend guard as plan-corp-roles; this job has no needs, so it must
+    # carry its own.
+    if: vars.TG_AZ_STATE_SA != ''
+    runs-on: ubuntu-latest
+    environment: subsidiary-plan
+    concurrency:
+      group: azure-cell-subsidiary-azure-pim-governance
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - name: terragrunt plan
+        working-directory: tenants/azure/subsidiary/azure-pim-governance
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/subsidiary-azure-pim-governance.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/subsidiary-azure-pim-governance.tfplan" > "$PLAN_DIR/subsidiary-azure-pim-governance.txt"
+          terragrunt show -json "$PLAN_DIR/subsidiary-azure-pim-governance.tfplan" > "$PLAN_DIR/subsidiary-azure-pim-governance.json"
+      - name: Plan summary
+        run: |
+          set -euo pipefail
+          json="$PLAN_DIR/subsidiary-azure-pim-governance.json"
+          add=$(jq '[.resource_changes[]? | select(.change.actions | index("create"))] | length' "$json")
+          change=$(jq '[.resource_changes[]? | select(.change.actions | index("update"))] | length' "$json")
+          destroy=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' "$json")
+          {
+            echo "### Subsidiary plan taken at merge (${{ github.sha }})"
+            echo "Add: $add, Change: $change, Destroy: $destroy"
+            echo ""
+            echo "This exact plan file is what apply-subsidiary-pim will run after the gate."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: azure-plan-subsidiary-azure-pim-governance-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/subsidiary-azure-pim-governance.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  subsidiary-gate:
+    name: gate (subsidiary)
+    needs: [apply-corp-pim, plan-subsidiary-pim]
+    runs-on: ubuntu-latest
+    # The "subsidiary" environment carries required reviewers and a wait timer
+    # (Settings -> Environments -> subsidiary -> Deployment protection rules).
+    # The wait timer is the primary soak; the SOAK_MINUTES sleep below is a
+    # belt-and-braces fallback for repositories that have not set the timer.
+    environment: subsidiary
+    steps:
+      - name: Soak checklist
+        run: |
+          cat <<'EOF'
+          Corp has been applied. Before approving the subsidiary, confirm:
+            1. A member of a corp eligible group can see the role in PIM and activate it
+               with MFA and a justification, and the activation ends at the policy window.
+            2. An Owner activation at the corp root prompts for approval and is not granted
+               until an approver accepts.
+            3. The corp custom roles appear in the portal with the expected actions and
+               assignable scopes, and no built-in role definition changed.
+            4. The subsidiary plan artifact (azure-plan-subsidiary-azure-pim-governance-<sha>)
+               shows the expected change set and no destroys you did not intend.
+          EOF
+      - name: Documented wait
+        env:
+          SOAK_MINUTES: ${{ vars.SOAK_MINUTES || '0' }}
+        run: |
+          set -euo pipefail
+          echo "Soaking for ${SOAK_MINUTES} minute(s) beyond the environment wait timer."
+          sleep "$(( SOAK_MINUTES * 60 ))"
+
+  # ---------------------------------------------------------------------------
+  apply-subsidiary-pim:
+    name: apply subsidiary/azure-pim-governance
+    needs: [subsidiary-gate]
+    runs-on: ubuntu-latest
+    environment: subsidiary-apply
+    concurrency:
+      group: azure-cell-subsidiary-azure-pim-governance
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: azure-plan-subsidiary-azure-pim-governance-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (merge-time plan)
+        working-directory: tenants/azure/subsidiary/azure-pim-governance
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          # A stale plan (state changed since merge) makes this fail. That is intended:
+          # re-run the release so a fresh plan goes back through the gate.
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/subsidiary-azure-pim-governance.tfplan"
