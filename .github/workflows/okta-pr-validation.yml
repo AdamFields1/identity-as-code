@@ -131,7 +131,8 @@ jobs:
   plan:
     name: plan ${{ matrix.tenant }}
     needs: [static-checks, changed-tenants]
-    if: needs.changed-tenants.outputs.tenants != '[]'
+    # Plans need the state backend; static checks above do not, so they always run.
+    if: needs.changed-tenants.outputs.tenants != '[]' && vars.TG_STATE_BUCKET != ''
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

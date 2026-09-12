@@ -58,6 +58,10 @@ jobs:
   # ---------------------------------------------------------------------------
   plan-dev:
     name: plan dev
+    # Skip the whole train until the repo variables for the state backend exist.
+    # Without this guard every push to main would fail on a portfolio repo that
+    # has no live backend behind it. Downstream jobs inherit the skip through needs.
+    if: vars.TG_STATE_BUCKET != ''
     runs-on: ubuntu-latest
     environment: dev-plan
     concurrency:
