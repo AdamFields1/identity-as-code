@@ -142,6 +142,10 @@ jobs:
   # ---------------------------------------------------------------------------
   plan-prod:
     name: plan prod (merge-time)
+    # Same guard as plan-dev. This job has no needs edge on purpose (the prod plan
+    # is taken at merge time, in parallel with the dev apply), so it must carry
+    # its own skip condition or it runs on every push with no backend behind it.
+    if: vars.TG_STATE_BUCKET != ''
     runs-on: ubuntu-latest
     environment: prod-plan
     concurrency:
