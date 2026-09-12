@@ -43,7 +43,6 @@ resource "okta_policy_mfa" "this" {
   onprem_mfa        = lookup(local.auth, "onprem_mfa", null)
   external_idp      = lookup(local.auth, "external_idp", null)
   smart_card_idp    = lookup(local.auth, "smart_card_idp", null)
-  custom_app        = lookup(local.auth, "custom_app", null)
   hotp              = lookup(local.auth, "hotp", null)
 
   # Classic Engine factors

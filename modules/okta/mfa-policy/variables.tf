@@ -64,7 +64,7 @@ variable "authenticators" {
 
     Supported keys (OIE): okta_password, okta_email, okta_verify, phone_number,
     fido_webauthn, google_otp, security_question, duo, yubikey_token, symantec_vip,
-    rsa_token, onprem_mfa, external_idp, smart_card_idp, custom_app, hotp.
+    rsa_token, onprem_mfa, external_idp, smart_card_idp, hotp.
     Classic-only keys: okta_otp, okta_push, okta_sms, okta_call, okta_question.
   EOT
 
@@ -78,7 +78,7 @@ variable "authenticators" {
       for k, v in var.authenticators : contains([
         "okta_password", "okta_email", "okta_verify", "phone_number", "fido_webauthn",
         "google_otp", "security_question", "duo", "yubikey_token", "symantec_vip",
-        "rsa_token", "onprem_mfa", "external_idp", "smart_card_idp", "custom_app", "hotp",
+        "rsa_token", "onprem_mfa", "external_idp", "smart_card_idp", "hotp",
         "okta_otp", "okta_push", "okta_sms", "okta_call", "okta_question",
       ], k)
     ])
