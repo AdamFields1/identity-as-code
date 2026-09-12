@@ -93,7 +93,13 @@ inputs = {
       display_name = "CA003 Require MFA for all users"
       state        = "enabled"
 
-      users     = { included_users = ["All"] }
+      # Exclusions are named groups, never individual users, so every exemption
+      # has an owner and shows up in an access review. The break-glass group is
+      # appended by the module and is deliberately not listed here.
+      users = {
+        included_users  = ["All"]
+        excluded_groups = ["CA Exclusion MFA Legacy Devices", "SVC Non-Interactive Accounts"]
+      }
       locations = { included = ["All"], excluded = ["corp-egress", "vpn"] }
 
       grant_controls = { built_in_controls = ["mfa"] }
