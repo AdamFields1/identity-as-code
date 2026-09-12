@@ -1,0 +1,274 @@
+# PR validation for the Okta identity-as-code tree.
+#
+# Static checks run on every PR that touches Terraform or Terragrunt. A speculative
+# plan runs only for tenants affected by the change: a tenant whose own directory
+# changed, or every tenant when shared code (modules, stack, root.hcl) changed.
+#
+# Credentials: AWS via OIDC (no static keys), Okta token from the "<tenant>-plan"
+# GitHub environment, which holds a read-only token. See docs/adr/0003.
+#
+# Plans run one job per tenant instead of a single `terragrunt run --all plan` so
+# each tenant gets its own artifact, its own PR comment, and its own concurrency
+# group. The result is the same set of plans with better attribution.
+
+name: okta-pr-validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "modules/**"
+      - "stacks/**"
+      - "tenants/**"
+      - ".tflint.hcl"
+      - ".github/workflows/okta-pr-validation.yml"
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  TF_VERSION: "1.9.8"
+  TG_VERSION: "0.77.0"
+  TF_IN_AUTOMATION: "true"
+  TG_NON_INTERACTIVE: "true"
+
+concurrency:
+  group: okta-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: fmt, tflint, checkov, validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+          terragrunt --version
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      - name: terragrunt hclfmt
+        run: terragrunt hclfmt --check
+
+      - name: Setup tflint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: tflint
+        run: |
+          set -euo pipefail
+          tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
+          tflint --recursive --config "$GITHUB_WORKSPACE/.tflint.hcl" --format compact
+
+      - name: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          quiet: true
+          skip_path: .terragrunt-cache
+          output_format: cli,sarif
+          output_file_path: console,checkov.sarif
+
+      - name: terraform validate (modules and stack)
+        run: |
+          set -euo pipefail
+          for dir in modules/okta/* stacks/*; do
+            echo "::group::validate $dir"
+            terraform -chdir="$dir" init -backend=false -input=false >/dev/null
+            terraform -chdir="$dir" validate
+            echo "::endgroup::"
+          done
+
+  changed-tenants:
+    name: Detect affected tenants
+    runs-on: ubuntu-latest
+    outputs:
+      tenants: ${{ steps.detect.outputs.tenants }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect
+        id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          all_tenants=$(find tenants/okta -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+
+          if echo "$changed" | grep -Eq '^(modules/|stacks/|tenants/okta/root\.hcl|\.github/workflows/okta-pr-validation\.yml)'; then
+            selected="$all_tenants"
+          else
+            selected=$(echo "$changed" | grep -E '^tenants/okta/[^/]+/' | cut -d/ -f3 | sort -u || true)
+          fi
+
+          json=$(printf '%s\n' $selected | grep -v '^$' | jq -R . | jq -sc .)
+          echo "Affected tenants: $json"
+          echo "tenants=$json" >> "$GITHUB_OUTPUT"
+
+  plan:
+    name: plan ${{ matrix.tenant }}
+    needs: [static-checks, changed-tenants]
+    if: needs.changed-tenants.outputs.tenants != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tenant: ${{ fromJson(needs.changed-tenants.outputs.tenants) }}
+
+    # Read-only token lives in the "<tenant>-plan" environment. Sharing the
+    # per-tenant concurrency group with the release workflow means a PR plan never
+    # fights a release apply for the state lock.
+    environment: ${{ matrix.tenant }}-plan
+    concurrency:
+      group: okta-tenant-${{ matrix.tenant }}
+      cancel-in-progress: false
+
+    env:
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+      PLAN_DIR: ${{ github.workspace }}/plans
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          role-session-name: okta-pr-plan-${{ matrix.tenant }}-${{ github.run_id }}
+
+      - name: terragrunt plan
+        working-directory: tenants/okta/${{ matrix.tenant }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/${{ matrix.tenant }}.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/${{ matrix.tenant }}.tfplan" > "$PLAN_DIR/${{ matrix.tenant }}.txt"
+          terragrunt show -json "$PLAN_DIR/${{ matrix.tenant }}.tfplan" > "$PLAN_DIR/${{ matrix.tenant }}.json"
+
+      - name: Summarise plan
+        id: summary
+        run: |
+          set -euo pipefail
+          json="$PLAN_DIR/${{ matrix.tenant }}.json"
+          add=$(jq '[.resource_changes[]? | select(.change.actions | index("create"))] | length' "$json")
+          change=$(jq '[.resource_changes[]? | select(.change.actions | index("update"))] | length' "$json")
+          destroy=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' "$json")
+          echo "add=$add" >> "$GITHUB_OUTPUT"
+          echo "change=$change" >> "$GITHUB_OUTPUT"
+          echo "destroy=$destroy" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Okta plan: ${{ matrix.tenant }}"
+            echo "Add: $add, Change: $change, Destroy: $destroy"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: okta-plan-${{ matrix.tenant }}-pr${{ github.event.pull_request.number }}
+          path: |
+            ${{ env.PLAN_DIR }}/${{ matrix.tenant }}.tfplan
+            ${{ env.PLAN_DIR }}/${{ matrix.tenant }}.txt
+            ${{ env.PLAN_DIR }}/${{ matrix.tenant }}.json
+          retention-days: 7
+
+      - name: Post plan summary as PR comment
+        uses: actions/github-script@v7
+        env:
+          TENANT: ${{ matrix.tenant }}
+          ADD: ${{ steps.summary.outputs.add }}
+          CHANGE: ${{ steps.summary.outputs.change }}
+          DESTROY: ${{ steps.summary.outputs.destroy }}
+        with:
+          script: |
+            const fs = require('fs');
+            const tenant = process.env.TENANT;
+            const marker = `<!-- okta-plan:${tenant} -->`;
+            const planPath = `${process.env.PLAN_DIR}/${tenant}.txt`;
+            let plan = fs.readFileSync(planPath, 'utf8');
+            const limit = 60000;
+            if (plan.length > limit) {
+              plan = plan.slice(0, limit) + '\n\n... truncated, full plan in the workflow artifact ...';
+            }
+            const destroyWarning = process.env.DESTROY !== '0'
+              ? '\n\n**Warning: this plan destroys resources. Review carefully.**'
+              : '';
+            const body = [
+              marker,
+              `### Okta plan for \`${tenant}\``,
+              `Add: **${process.env.ADD}**, Change: **${process.env.CHANGE}**, Destroy: **${process.env.DESTROY}**${destroyWarning}`,
+              '',
+              '<details><summary>Show plan</summary>',
+              '',
+              '```hcl',
+              plan,
+              '```',
+              '',
+              '</details>',
+              '',
+              `Artifact: \`okta-plan-${tenant}-pr${context.issue.number}\``
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100
+            });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }

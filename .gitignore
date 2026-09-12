@@ -1,0 +1,36 @@
+# Terraform working files
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+
+# Keep provider lock files: they pin provider checksums and belong in review.
+!.terraform.lock.hcl
+
+# Terragrunt
+**/.terragrunt-cache/
+terragrunt-debug.tfvars.json
+
+# Variable files may carry secrets. Only *.example.tfvars is safe to commit.
+*.tfvars
+*.tfvars.json
+!*.example.tfvars
+!*.example.tfvars.json
+
+# Local environment
+.env
+.env.*
+
+# One-shot adoption artifacts (see tenants/okta/root.hcl and scripts/)
+tenants/**/imports.tf
+scripts/out/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

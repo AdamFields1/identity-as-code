@@ -1,0 +1,261 @@
+# Release train for the Okta identity-as-code tree.
+#
+#   push to main
+#     |-- plan-dev  ----> apply-dev (environment: dev)
+#     |-- plan-prod (merge-time plan, saved as artifact)
+#                 \
+#                  soak-gate (environment: prod, required reviewers + wait timer)
+#                       |
+#                  apply-prod (environment: prod-apply, applies the merge-time plan)
+#
+# Why the prod plan is taken at merge time and not after approval: the reviewer
+# approves a specific plan, and that exact plan is what runs. If prod state moves
+# between merge and approval, Terraform refuses the stale plan and the release
+# must be re-run, which is the safe failure.
+#
+# Environments (configured in repository settings, no secrets in this repo):
+#   dev-plan   read-only Okta token, plan-only AWS role
+#   dev        read-write Okta token for the dev tenant
+#   prod-plan  read-only Okta token for prod, plan-only AWS role
+#   prod       no secrets; carries the required reviewers and the wait timer
+#   prod-apply read-write Okta token for prod; deployment branch policy: main only
+#
+# The prod secret lives in prod-apply rather than prod so the reviewer approves
+# once, at the gate. apply-prod cannot start without soak-gate succeeding.
+
+name: okta-release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "modules/**"
+      - "stacks/**"
+      - "tenants/**"
+      - ".github/workflows/okta-release.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.9.8"
+  TG_VERSION: "0.77.0"
+  TF_IN_AUTOMATION: "true"
+  TG_NON_INTERACTIVE: "true"
+  TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+  TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+  TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+  PLAN_DIR: ${{ github.workspace }}/plans
+
+# Releases queue behind each other and are never cancelled mid-apply.
+concurrency:
+  group: okta-release-main
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  plan-dev:
+    name: plan dev
+    runs-on: ubuntu-latest
+    environment: dev-plan
+    concurrency:
+      group: okta-tenant-dev
+      cancel-in-progress: false
+    env:
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          role-session-name: okta-release-plan-dev-${{ github.run_id }}
+      - name: terragrunt plan
+        working-directory: tenants/okta/dev
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/dev.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/dev.tfplan" > "$PLAN_DIR/dev.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: okta-plan-dev-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/dev.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-dev:
+    name: apply dev
+    needs: [plan-dev]
+    runs-on: ubuntu-latest
+    environment: dev
+    concurrency:
+      group: okta-tenant-dev
+      cancel-in-progress: false
+    env:
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          role-session-name: okta-release-apply-dev-${{ github.run_id }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: okta-plan-dev-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/okta/dev
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/dev.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-prod:
+    name: plan prod (merge-time)
+    runs-on: ubuntu-latest
+    environment: prod-plan
+    concurrency:
+      group: okta-tenant-prod
+      cancel-in-progress: false
+    env:
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          role-session-name: okta-release-plan-prod-${{ github.run_id }}
+      - name: terragrunt plan
+        working-directory: tenants/okta/prod
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/prod.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/prod.tfplan" > "$PLAN_DIR/prod.txt"
+          terragrunt show -json "$PLAN_DIR/prod.tfplan" > "$PLAN_DIR/prod.json"
+      - name: Plan summary
+        run: |
+          set -euo pipefail
+          json="$PLAN_DIR/prod.json"
+          add=$(jq '[.resource_changes[]? | select(.change.actions | index("create"))] | length' "$json")
+          change=$(jq '[.resource_changes[]? | select(.change.actions | index("update"))] | length' "$json")
+          destroy=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' "$json")
+          {
+            echo "### Prod plan taken at merge (${{ github.sha }})"
+            echo "Add: $add, Change: $change, Destroy: $destroy"
+            echo ""
+            echo "This exact plan file is what apply-prod will run after the soak gate."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: okta-plan-prod-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/prod.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  soak-gate:
+    name: soak gate (prod)
+    needs: [apply-dev, plan-prod]
+    runs-on: ubuntu-latest
+    # The "prod" environment carries required reviewers and a wait timer
+    # (Settings -> Environments -> prod -> Deployment protection rules).
+    # The wait timer is the primary soak; the SOAK_MINUTES sleep below is a
+    # belt-and-braces fallback for repositories that have not set the timer.
+    environment: prod
+    steps:
+      - name: Soak checklist
+        run: |
+          cat <<'EOF'
+          Dev has been applied. Before approving prod, confirm:
+            1. Dev sign-in works from inside and outside the corporate zone.
+            2. MFA enrollment prompts appear for a fresh dev test user.
+            3. Password reset and unlock still work for a dev test user.
+            4. The prod plan artifact (okta-plan-prod-<sha>) shows the expected change set
+               and no destroys you did not intend.
+          EOF
+      - name: Documented wait
+        env:
+          SOAK_MINUTES: ${{ vars.SOAK_MINUTES || '0' }}
+        run: |
+          set -euo pipefail
+          echo "Soaking for ${SOAK_MINUTES} minute(s) beyond the environment wait timer."
+          sleep "$(( SOAK_MINUTES * 60 ))"
+
+  # ---------------------------------------------------------------------------
+  apply-prod:
+    name: apply prod
+    needs: [soak-gate]
+    runs-on: ubuntu-latest
+    environment: prod-apply
+    concurrency:
+      group: okta-tenant-prod
+      cancel-in-progress: false
+    env:
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          role-session-name: okta-release-apply-prod-${{ github.run_id }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: okta-plan-prod-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (merge-time plan)
+        working-directory: tenants/okta/prod
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          # A stale plan (state changed since merge) makes this fail. That is intended:
+          # re-run the release so a fresh plan goes back through the gate.
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/prod.tfplan"
