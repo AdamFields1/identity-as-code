@@ -7,6 +7,9 @@ Four providers, one layout: Okta authentication policy, Entra ID (app registrati
 Conditional Access, PIM for groups and directory roles, and federation to AWS),
 Azure resource RBAC (custom roles, PIM policies, eligibilities), and AWS IAM
 Identity Center (permission sets and group assignments, in commercial and GovCloud).
+Alongside the resources, the identity hygiene that cannot be a resource because
+it depends on live data (credential expiry, guest dormancy) runs as Azure
+Automation runbooks that are themselves deployed by a stack.
 
 This is a portfolio repository by Adam Fields. It exists to show design decisions and
 the reasoning behind them, not to be a feature-complete wrapper for any provider.
@@ -39,8 +42,11 @@ decision records carry the reasoning that the commits do not.
 | AWS IAM Identity Center gallery app: SAML, signing certificate, group assignments, SCIM provisioning | `modules/entra/aws-identity-center-app` | `azuread_application`, `azuread_service_principal`, `azuread_service_principal_token_signing_certificate`, `azuread_app_role_assignment`, `azuread_synchronization_secret`, `azuread_synchronization_job` |
 | Identity Center permission sets with partition-aware managed policies, inline policy, and boundary | `modules/aws/permission-set` | `aws_ssoadmin_permission_set`, `aws_ssoadmin_managed_policy_attachment`, `aws_ssoadmin_customer_managed_policy_attachment`, `aws_ssoadmin_permission_set_inline_policy`, `aws_ssoadmin_permissions_boundary_attachment` |
 | Identity Center account assignments parsed from `AWS-<PARTITION>-<accountId>-<PermissionSetName>` group names | `modules/aws/account-assignment` | `aws_ssoadmin_account_assignment` |
+| Automation account with a user-assigned identity, account variables, optional module assets | `modules/azure/automation-account` | `azurerm_automation_account`, `azurerm_user_assigned_identity`, `azurerm_automation_variable_string`, `azurerm_automation_variable_bool`, `azurerm_automation_module` |
+| Runbooks published from repository files, schedules, and job schedules with parameters | `modules/azure/automation-runbooks` | `azurerm_automation_runbook`, `azurerm_automation_schedule`, `azurerm_automation_job_schedule` |
+| Microsoft Graph application permissions for a managed identity, by name | `modules/entra/graph-app-role-grant` | `azuread_app_role_assignment` |
 
-Eight stacks compose those modules into deployable units:
+Nine stacks compose those modules into deployable units:
 
 | Stack | Composes | Cells |
 |-------|----------|-------|
@@ -52,12 +58,15 @@ Eight stacks compose those modules into deployable units:
 | `stacks/azure-pim-governance` | PIM policies, then eligibilities, in that order | `tenants/azure/{corp,subsidiary}/azure-pim-governance` |
 | `stacks/entra-aws-federation` | one Identity Center gallery app per AWS partition, fed from one list of convention-named groups | `tenants/azure/corp/entra-aws-federation` |
 | `stacks/aws-identity-center` | permission sets, then account assignments, one assignment per group name | `tenants/aws/{commercial,govcloud}/aws-identity-center` |
+| `stacks/azure-automation` | Automation account and identity, then the runbooks in `automation/runbooks` and the identity's Graph permissions | `tenants/azure/corp/azure-automation` |
 
 The subsidiary tenant has no `entra-app-registrations` cell because application
 onboarding is confined to corp, no `azure-rbac-roles` cell because it assigns built-in
-roles only, and no `entra-aws-federation` cell because corp is the identity source
-for every Identity Center instance. Nothing is stubbed to make the tenants look
-symmetrical.
+roles only, no `entra-aws-federation` cell because corp is the identity source
+for every Identity Center instance, and no `azure-automation` cell because the
+runbooks have not been rolled out to it; when they are, the cell is a copy of
+corp's with its own group names and mailbox. Nothing is stubbed to make the
+tenants look symmetrical.
 
 ## Layout
 
@@ -65,8 +74,8 @@ symmetrical.
 identity-as-code/
   modules/
     okta/                       network-zone, session-policy, mfa-policy, password-policy
-    entra/                      app registration, Conditional Access, PIM for groups, and AWS Identity Center app building blocks
-    azure/                      rbac-role-definition, pim-role-policy, pim-eligible-assignment
+    entra/                      app registration, Conditional Access, PIM for groups, AWS Identity Center app, and Graph app role grant building blocks
+    azure/                      rbac-role-definition, pim-role-policy, pim-eligible-assignment, automation-account, automation-runbooks
     aws/                        permission-set, account-assignment
   stacks/                       units of deployment: compose modules, resolve names to IDs
     okta-config/
@@ -76,7 +85,11 @@ identity-as-code/
     entra-aws-federation/
     azure-rbac-roles/
     azure-pim-governance/
+    azure-automation/
     aws-identity-center/
+  automation/
+    runbooks/                   PowerShell runbooks deployed by stacks/azure-automation: credential hygiene, guest lifecycle
+    tests/                      Pester tests (Graph mocked) and the runner
   tenants/
     okta/                       one directory per tenant, values only, Terragrunt wiring
       root.hcl                  S3 state, Okta provider generation, adoption hook
@@ -87,6 +100,7 @@ identity-as-code/
       corp/
         azure-rbac-roles/terragrunt.hcl
         azure-pim-governance/terragrunt.hcl
+        azure-automation/terragrunt.hcl
         entra-app-registrations/terragrunt.hcl
         entra-aws-federation/terragrunt.hcl
         entra-conditional-access/terragrunt.hcl
@@ -102,7 +116,7 @@ identity-as-code/
       govcloud/
         aws-identity-center/terragrunt.hcl
   .github/workflows/            PR validation and release trains: okta-* (dev -> prod), azure-* (corp -> subsidiary), aws-* (commercial -> govcloud)
-  scripts/                      PowerShell helpers to adopt an existing tenant and export drift
+  scripts/                      PowerShell helpers to adopt an existing tenant, export drift, and import live PIM eligibilities
   tests/                        zero-change import gate
   docs/                         architecture diagrams and decision records
 ```
@@ -138,6 +152,18 @@ assigned directly. See [ADR 0008](docs/adr/0008-entra-id-as-the-identity-source-
 cell says only which region it is. State bucket and OIDC role are per partition
 and arrive through the environment. See
 [ADR 0009](docs/adr/0009-partition-aware-aws-cells.md).
+
+**Automation is code, dry by default, on a managed identity.** The work that
+depends on live data (which credentials expired, which guests went quiet) runs
+as runbooks in `automation/runbooks`, published from their files by
+`stacks/azure-automation` onto an Automation account whose user-assigned
+identity is created and granted Graph permissions in the same plan. Every
+runbook is `-DryRun` unless the tenant cell says otherwise, every destructive
+action has a cap, and a guest's lifecycle stage is a group membership so every
+transition is in the audit log and reversible by a helpdesk agent. The runbooks
+have Pester tests that mock Graph and assert the boundaries. See
+[ADR 0010](docs/adr/0010-automation-runs-on-managed-identity-with-dry-run-defaults.md)
+and [ADR 0011](docs/adr/0011-lifecycle-stage-tracked-in-groups.md).
 
 **Path is environment, via Terragrunt.** `tenants/okta/dev`, `tenants/okta/prod`,
 `tenants/azure/corp`, `tenants/azure/subsidiary`, `tenants/aws/commercial`, and
@@ -188,7 +214,8 @@ was produced at merge time. If that
 state moved in the meantime, Terraform refuses the stale plan and the release is
 re-run rather than applied blind. The Azure train additionally applies the corp
 roles cell before planning the corp governance cell, because the latter resolves
-custom roles by name at plan time.
+custom roles by name at plan time, and applies the corp automation cell after
+the governance cell so corp is complete before the subsidiary gate opens.
 
 ## How to use it
 
@@ -271,6 +298,13 @@ To adopt an existing tenant instead of creating policies from scratch:
    `tests/README.md` describes the gate that enforces this in CI.
 4. Apply (this only records the imports), then delete `imports.tf`.
 
+For PIM eligibilities, `scripts/Export-PimEligibilityImports.ps1` does the same
+for the `azure-pim-governance` and `entra-pim-governance` cells from the live
+schedule instances, with one extra first step: `terragrunt apply -refresh-only`
+in the cell, because renewed eligibilities get new schedule IDs and state must
+catch up before an import file is trusted. `scripts/Export-EntraDrift.ps1` is
+the equivalent for application registrations.
+
 ## Deliberately out of scope
 
 - Users and group memberships. The directory of record owns those. Every stack
@@ -293,6 +327,12 @@ To adopt an existing tenant instead of creating policies from scratch:
 - Provisioning the S3 buckets, DynamoDB tables, AWS OIDC roles (one set per
   partition), Azure storage account, federated credentials, and GitHub
   environments. That is platform bootstrap and lives in a separate repository.
+- The three guest lifecycle stage groups, the shared mailbox the runbooks send
+  from, the Exchange application access policy that restricts `Mail.Send` to
+  it (no Terraform resource exists for it), and the diagnostic settings that
+  stream Automation job output to the SIEM. The automation stack resolves the
+  groups and mailbox by name and outputs the identity client ID the Exchange
+  policy needs.
 
 ## Verification status
 
@@ -324,6 +364,19 @@ falls back to the default role ID and otherwise fails with the list), that the
 synchronization template the gallery application publishes is `aws` (the module
 README says how to list it), and that the provider leaves the template's SAML
 settings alone when `identifier_uris` and `reply_urls` are set.
+
+The automation pieces (`modules/azure/automation-account`,
+`modules/azure/automation-runbooks`, `modules/entra/graph-app-role-grant`,
+`stacks/azure-automation`) pass `terraform init -backend=false` and
+`terraform validate` against the same pinned providers. The runbooks and the
+PIM export script parse cleanly with the PowerShell language parser and their
+Pester tests (58 assertions across three files, Graph and ARM mocked) pass on
+Pester 3.4.0 under Windows PowerShell 5.1. What a first live run should
+confirm: that Azure Automation binds the runbooks' `[switch]$DryRun` from the
+job schedule string `"false"` (if it does not, the failure is a job that errors
+on parameter binding, never a live run), that the Automation identity endpoint
+accepts the `client_id` query parameter for the user-assigned identity, and that
+`signInActivity` is licensed in the tenant. No live tenant was used.
 
 ## License
 

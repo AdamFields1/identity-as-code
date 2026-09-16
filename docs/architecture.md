@@ -18,11 +18,14 @@ flowchart LR
       EPP[pim-role-policy]
       EPE[pim-eligibility]
       EAI[aws-identity-center-app]
+      EGG[graph-app-role-grant]
     end
     subgraph mazure["modules/azure"]
       ARD[rbac-role-definition]
       APP[pim-role-policy]
       APE[pim-eligible-assignment]
+      AAC[automation-account]
+      ARB[automation-runbooks]
     end
     subgraph maws["modules/aws"]
       WPS[permission-set]
@@ -38,7 +41,13 @@ flowchart LR
     SEF[entra-aws-federation]
     SAR[azure-rbac-roles]
     SAP[azure-pim-governance]
+    SAA[azure-automation]
     SWI[aws-identity-center]
+  end
+
+  subgraph runbooks["automation/runbooks (PowerShell, published by the stack)"]
+    RB1[Invoke-AppCredentialHygiene]
+    RB2[Invoke-GuestLifecycle]
   end
 
   subgraph tokta["tenants/okta (values only)"]
@@ -81,6 +90,11 @@ flowchart LR
   ARD --> SAR
   APP --> SAP
   APE --> SAP
+  AAC --> SAA
+  ARB --> SAA
+  EGG --> SAA
+  RB1 -.file.-> SAA
+  RB2 -.file.-> SAA
   WPS --> SWI
   WAA --> SWI
 
@@ -92,6 +106,7 @@ flowchart LR
   SEF --> CORP
   SAR --> CORP
   SAP --> CORP
+  SAA --> CORP
   SEC --> SUB
   SEP --> SUB
   SAP --> SUB
@@ -127,12 +142,18 @@ Three things are deliberately absent from the diagram. `azure-rbac-roles` has no
 edge to `azure-pim-governance`: the governance stack refers to custom roles by
 display name and resolves them at plan time, so the coupling is a name, not an
 output (ADR 0005). `subsidiary/*` has no `azure-rbac-roles`,
-`entra-app-registrations`, or `entra-aws-federation` cell, because the subsidiary
-assigns built-in roles only, registers no applications, and reaches AWS through
-corp groups. And `entra-aws-federation` has no edge to `aws-identity-center`
+`entra-app-registrations`, `entra-aws-federation`, or `azure-automation` cell,
+because the subsidiary assigns built-in roles only, registers no applications,
+reaches AWS through corp groups, and has not had the runbooks rolled out. And
+`entra-aws-federation` has no edge to `aws-identity-center`
 even though one feeds the other: the coupling is the group name
 `AWS-<PARTITION>-<accountId>-<PermissionSetName>`, listed in both cells and
 resolved on each side at plan time (ADR 0008), not a cross-cloud dependency.
+
+The runbooks are a fourth kind of input. They are not modules (a stack does
+not call them) and not tenant values (a cell names a file, never a body); the
+`azure-automation` stack reads each file and publishes it, so a runbook edit
+is a plan diff like any other.
 
 ## Inside the stack
 
@@ -194,6 +215,51 @@ references the policy resource, so the graph needs an explicit `depends_on`. The
 roles cell is applied before the governance cell plans because the role name is
 resolved at plan time. Every scope, role, and group is given by name in the tenant
 cell, so no cell ever contains a GUID or a management group ID.
+
+## Inside the automation stack
+
+```mermaid
+flowchart TB
+  subgraph auto["stacks/azure-automation (one cell per tenant)"]
+    RG["data azurerm_resource_group (by name)"]
+    UAI["module automation_account\nazurerm_user_assigned_identity"]
+    AA["module automation_account\nazurerm_automation_account\n+ variables"]
+    FILES["automation/runbooks/*.ps1\nfile() + filesha256()"]
+    RBK["module runbooks\nazurerm_automation_runbook\nazurerm_automation_schedule\nazurerm_automation_job_schedule"]
+    GSP["data azuread_service_principal\n(Microsoft Graph, app_role_ids by name)"]
+    GRANT["module graph_grants\nazuread_app_role_assignment"]
+    RG --> UAI
+    RG --> AA
+    UAI -->|identity_ids| AA
+    AA -->|account name, location| RBK
+    UAI -->|client_id into every job schedule as clientid| RBK
+    FILES -->|content| RBK
+    UAI -->|principal_id| GRANT
+    GSP -->|role IDs| GRANT
+  end
+
+  subgraph run["at run time (Azure Automation sandbox)"]
+    JOB["job: runbook + schedule parameters\n(dryrun, environment, sendermailbox, clientid, thresholds, caps)"]
+    IDE["Automation identity endpoint\ntoken for Graph with client_id"]
+    GRAPH["Microsoft Graph\n(global or US Government)"]
+    JOB --> IDE --> GRAPH
+  end
+
+  RBK -.schedule fires.-> JOB
+  GRANT -.what the token may do.-> GRAPH
+```
+
+The account and its identity come first because both leaves key off them: the
+runbooks module needs the account name and location, and the Graph grants need
+the identity's principal ID. The identity's client ID is the one value a cell
+cannot know and every runbook needs, so the stack injects it into every job
+schedule's parameters along with the cloud, the sender mailbox, and the dry-run
+flag; a cell states those once and cannot give two runbooks different answers.
+The runbook body is the file in the repository, hashed into a tag so the plan
+and the portal both show the deployed revision. What the identity may do is a
+list of Graph permission names in the cell (ADR 0010); where a guest is on the
+lifecycle ladder is a group membership the runbook resolves by display name
+(ADR 0011).
 
 ## Across the two clouds: Entra to Identity Center
 
@@ -270,6 +336,7 @@ key = "azure/${path_relative_to_include()}/terraform.tfstate"
 |----------------|-----------|
 | `tenants/azure/corp/azure-rbac-roles` | `azure/corp/azure-rbac-roles/terraform.tfstate` |
 | `tenants/azure/corp/azure-pim-governance` | `azure/corp/azure-pim-governance/terraform.tfstate` |
+| `tenants/azure/corp/azure-automation` | `azure/corp/azure-automation/terraform.tfstate` |
 | `tenants/azure/corp/entra-conditional-access` | `azure/corp/entra-conditional-access/terraform.tfstate` |
 | `tenants/azure/subsidiary/azure-pim-governance` | `azure/subsidiary/azure-pim-governance/terraform.tfstate` |
 
@@ -335,10 +402,15 @@ Two properties matter here:
 `azure-release` has the same shape with corp in the dev position and subsidiary in
 the prod position, and one extra rule: the corp roles cell is applied before the
 corp governance cell is planned, because the governance cell resolves custom role
-names at plan time. The subsidiary plan is still taken at merge time, in parallel,
-and applied unchanged after the `subsidiary` environment gate. Concurrency groups
-are per cell (`azure-cell-corp-azure-pim-governance`), not per tenant, because two
-cells of one tenant have separate state files and can safely run side by side.
+names at plan time. The corp automation cell is planned and applied after the
+governance cell, not because anything is resolved from it but so that corp is
+completely applied before the gate opens; the gate needs both applies. The
+subsidiary plan is still taken at merge time, in parallel, and applied unchanged
+after the `subsidiary` environment gate. Concurrency groups are per cell
+(`azure-cell-corp-azure-pim-governance`), not per tenant, because two cells of
+one tenant have separate state files and can safely run side by side. A change
+under `automation/runbooks` triggers the train like a module change, because the
+runbook body is what the automation cell publishes.
 
 `aws-release` has the same shape with commercial in the dev position and GovCloud
 in the prod position. Each job names its GitHub environment, and the environment
@@ -358,6 +430,7 @@ that cell is applied from a workstation (ADR 0008).
 | Talk to Azure Resource Manager and Microsoft Graph | Same federated identity; `ARM_USE_OIDC=true` lets the providers do the token exchange themselves | About an hour |
 | Read/write state in S3 and talk to Identity Center, per partition | GitHub OIDC -> `aws-actions/configure-aws-credentials` -> role from the partition's environment variables (`AWS_PLAN_ROLE_ARN`, `AWS_APPLY_ROLE_ARN`) | Minutes |
 | Provision users and groups into Identity Center | SCIM endpoint and token issued by the AWS console, held as a GitHub environment secret, passed as the sensitive `TF_VAR_scim_credentials`; stored by the provider in state and in saved plans, rotated from the AWS console | Until rotated |
+| Run scheduled identity hygiene against Graph (outside CI) | User-assigned managed identity on the Automation account, created by Terraform; Graph app roles granted by Terraform; each job asks the Automation identity endpoint for a token with the identity's `client_id` | About an hour, per job |
 | Comment on PR | Workflow `GITHUB_TOKEN` with `pull-requests: write` | Job |
 
 The Azure identity is split by purpose and tenant. `AZ_CLIENT_ID`, `AZ_TENANT_ID`,

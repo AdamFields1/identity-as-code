@@ -31,6 +31,7 @@ on:
       - "stacks/azure-*/**"
       - "stacks/entra-*/**"
       - "tenants/azure/**"
+      - "automation/runbooks/**"
       - ".tflint.hcl"
       - ".github/workflows/azure-pr-validation.yml"
 
@@ -131,7 +132,9 @@ jobs:
           # A cell is tenants/azure/<tenant>/<stack>. %P prints "corp/azure-rbac-roles".
           all_cells=$(find tenants/azure -mindepth 2 -maxdepth 2 -type d -printf '%P\n' | sort)
 
-          if echo "$changed" | grep -Eq '^(modules/(azure|entra)/|stacks/(azure|entra)-|tenants/azure/root\.hcl|\.github/workflows/azure-pr-validation\.yml)'; then
+          # Runbook bodies are published by the azure-automation stack, so a
+          # runbook edit is a shared-code change for planning purposes.
+          if echo "$changed" | grep -Eq '^(modules/(azure|entra)/|stacks/(azure|entra)-|automation/runbooks/|tenants/azure/root\.hcl|\.github/workflows/azure-pr-validation\.yml)'; then
             selected="$all_cells"
           else
             selected=$(echo "$changed" | grep -E '^tenants/azure/[^/]+/[^/]+/' | cut -d/ -f3-4 | sort -u || true)

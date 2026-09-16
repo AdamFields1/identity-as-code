@@ -2,6 +2,8 @@
 #
 #   push to main
 #     |-- plan-corp-roles ---> apply-corp-roles ---> plan-corp-pim ---> apply-corp-pim
+#     |                                                                      |
+#     |                                          plan-corp-automation ---> apply-corp-automation
 #     |                                                                      \
 #     |-- plan-subsidiary-pim (merge-time plan, saved as artifact)            \
 #                 \                                                            \
@@ -9,11 +11,14 @@
 #                       |
 #                  apply-subsidiary-pim (environment: subsidiary-apply, applies the merge-time plan)
 #
-# Corp is the first tenant, the way dev is for Okta. Its two cells run in a
-# fixed order because the governance cell resolves custom roles by name at
-# plan time, so the roles cell must be applied before the governance cell can
-# even plan. That is the ordering cost of keeping definitions and assignments
-# in separate cells (docs/adr/0005), paid here rather than in a tenant file.
+# Corp is the first tenant, the way dev is for Okta. Its cells run in a fixed
+# order: the governance cell resolves custom roles by name at plan time, so
+# the roles cell must be applied before the governance cell can even plan.
+# That is the ordering cost of keeping definitions and assignments in separate
+# cells (docs/adr/0005), paid here rather than in a tenant file. The
+# automation cell has no plan-time dependency on the others; it follows the
+# governance cell only so that corp is completely applied before the
+# subsidiary gate opens.
 #
 # Subsidiary is the gated tenant, the way prod is for Okta. Its plan is taken
 # at merge time and saved; the reviewer approves that exact plan. If subsidiary
@@ -48,6 +53,7 @@ on:
       - "stacks/azure-*/**"
       - "stacks/entra-*/**"
       - "tenants/azure/**"
+      - "automation/runbooks/**"
       - ".github/workflows/azure-release.yml"
   workflow_dispatch:
 
@@ -249,6 +255,93 @@ jobs:
           terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/corp-azure-pim-governance.tfplan"
 
   # ---------------------------------------------------------------------------
+  plan-corp-automation:
+    name: plan corp/azure-automation
+    # After the governance cell only so corp is fully applied before the gate;
+    # nothing here is resolved from the other corp cells at plan time.
+    needs: [apply-corp-pim]
+    runs-on: ubuntu-latest
+    environment: corp-plan
+    concurrency:
+      group: azure-cell-corp-azure-automation
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - name: terragrunt plan
+        working-directory: tenants/azure/corp/azure-automation
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/corp-azure-automation.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/corp-azure-automation.tfplan" > "$PLAN_DIR/corp-azure-automation.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: azure-plan-corp-azure-automation-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/corp-azure-automation.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-corp-automation:
+    name: apply corp/azure-automation
+    needs: [plan-corp-automation]
+    runs-on: ubuntu-latest
+    environment: corp
+    concurrency:
+      group: azure-cell-corp-azure-automation
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: azure-plan-corp-azure-automation-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/azure/corp/azure-automation
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/corp-azure-automation.tfplan"
+
+  # ---------------------------------------------------------------------------
   plan-subsidiary-pim:
     name: plan subsidiary/azure-pim-governance (merge-time)
     # Same backend guard as plan-corp-roles; this job has no needs, so it must
@@ -311,7 +404,7 @@ jobs:
   # ---------------------------------------------------------------------------
   subsidiary-gate:
     name: gate (subsidiary)
-    needs: [apply-corp-pim, plan-subsidiary-pim]
+    needs: [apply-corp-pim, apply-corp-automation, plan-subsidiary-pim]
     runs-on: ubuntu-latest
     # The "subsidiary" environment carries required reviewers and a wait timer
     # (Settings -> Environments -> subsidiary -> Deployment protection rules).
