@@ -1,0 +1,5 @@
+{
+  "@odata.type": "#microsoft.graph.voiceAuthenticationMethodConfiguration",
+  "state": "disabled",
+  "isOfficePhoneAllowed": false
+}

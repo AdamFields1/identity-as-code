@@ -32,6 +32,9 @@ on:
       - "stacks/entra-*/**"
       - "tenants/azure/**"
       - "automation/runbooks/**"
+      - "automation/lib/**"
+      - "policies/entra/authentication-methods/**"
+      - "scripts/Set-AuthenticationMethods.ps1"
       - ".tflint.hcl"
       - ".github/workflows/azure-pr-validation.yml"
 
@@ -115,6 +118,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       cells: ${{ steps.detect.outputs.cells }}
+      auth_methods: ${{ steps.detect.outputs.auth_methods }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -132,13 +136,24 @@ jobs:
           # A cell is tenants/azure/<tenant>/<stack>. %P prints "corp/azure-rbac-roles".
           all_cells=$(find tenants/azure -mindepth 2 -maxdepth 2 -type d -printf '%P\n' | sort)
 
-          # Runbook bodies are published by the azure-automation stack, so a
-          # runbook edit is a shared-code change for planning purposes.
-          if echo "$changed" | grep -Eq '^(modules/(azure|entra)/|stacks/(azure|entra)-|automation/runbooks/|tenants/azure/root\.hcl|\.github/workflows/azure-pr-validation\.yml)'; then
+          # Runbook bodies, the library they inline, and the desired-state files
+          # are all published by the azure-automation stack, so an edit to any
+          # of them is a shared-code change for planning purposes.
+          if echo "$changed" | grep -Eq '^(modules/(azure|entra)/|stacks/(azure|entra)-|automation/(runbooks|lib)/|policies/entra/authentication-methods/|tenants/azure/root\.hcl|\.github/workflows/azure-pr-validation\.yml)'; then
             selected="$all_cells"
           else
             selected=$(echo "$changed" | grep -E '^tenants/azure/[^/]+/[^/]+/' | cut -d/ -f3-4 | sort -u || true)
           fi
+
+          # The authentication methods policy is not a cell (docs/adr/0012); a
+          # change to its desired state, the script, or the shared library gets
+          # a read-only drift check instead of a plan.
+          if echo "$changed" | grep -Eq '^(policies/entra/authentication-methods/|scripts/Set-AuthenticationMethods\.ps1|automation/lib/)'; then
+            auth_methods=true
+          else
+            auth_methods=false
+          fi
+          echo "auth_methods=$auth_methods" >> "$GITHUB_OUTPUT"
 
           # Matrix entries carry the path, a filesystem-safe id for artifact and
           # concurrency names, and the tenant for the environment lookup.
@@ -147,6 +162,53 @@ jobs:
             | jq -sc .)
           echo "Affected cells: $json"
           echo "cells=$json" >> "$GITHUB_OUTPUT"
+
+  auth-methods-drift:
+    name: authentication methods drift (corp, read-only)
+    needs: [static-checks, changed-cells]
+    # Same backend guard as the plans, not because the script uses state but
+    # because the guard is the repository's "a live tenant exists" switch. The
+    # corp-plan reader identity needs Policy.Read.AuthenticationMethod and
+    # Group.Read.All on Graph. -FailOnDrift makes the check red when the tenant
+    # and the proposed files differ, which is the point: the reviewer sees the
+    # field-level report before the release train patches it.
+    if: needs.changed-cells.outputs.auth_methods == 'true' && vars.TG_AZ_STATE_SA != ''
+    runs-on: ubuntu-latest
+    environment: corp-plan
+    concurrency:
+      group: azure-corp-authentication-methods
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+
+      - name: Set-AuthenticationMethods (report, fail on drift)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $token = (az account get-access-token --resource-type ms-graph --query accessToken -o tsv | Select-Object -First 1)
+          if ([string]::IsNullOrWhiteSpace($token)) { throw 'The Azure CLI returned no Microsoft Graph token.' }
+          $token = $token.Trim()
+          Write-Output "::add-mask::$token"
+          ./scripts/Set-AuthenticationMethods.ps1 -DesiredStatePath ./policies/entra/authentication-methods `
+            -DryRun:$true -FailOnDrift:$true -AccessToken $token -ReportPath ./out/auth-methods-corp.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload drift report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-auth-methods-corp-pr${{ github.event.pull_request.number }}
+          path: out/auth-methods-corp.json
+          retention-days: 7
+          if-no-files-found: ignore
 
   plan:
     name: plan ${{ matrix.cell.path }}

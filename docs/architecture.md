@@ -48,6 +48,13 @@ flowchart LR
   subgraph runbooks["automation/runbooks (PowerShell, published by the stack)"]
     RB1[Invoke-AppCredentialHygiene]
     RB2[Invoke-GuestLifecycle]
+    RB3[Invoke-AuthenticationMethodsDrift]
+    LIB[automation/lib/AuthenticationMethods.Common]
+  end
+
+  subgraph desired["policies (desired-state JSON, no Terraform resource)"]
+    AMP[entra/authentication-methods]
+    AMS[scripts/Set-AuthenticationMethods]
   end
 
   subgraph tokta["tenants/okta (values only)"]
@@ -95,6 +102,11 @@ flowchart LR
   EGG --> SAA
   RB1 -.file.-> SAA
   RB2 -.file.-> SAA
+  RB3 -.file.-> SAA
+  LIB -.inlined into RB3.-> SAA
+  LIB -.dot-sourced.-> AMS
+  AMP -.variables.-> SAA
+  AMP -.folder.-> AMS
   WPS --> SWI
   WAA --> SWI
 
@@ -128,6 +140,8 @@ flowchart LR
   SUB --> APR
   CORP --> AREL
   SUB --> AREL
+  AMS -.PATCH job.-> AREL
+  AMS -.drift check.-> APR
   COMM --> WPR
   GOVC --> WPR
   COMM --> WREL
@@ -153,7 +167,19 @@ resolved on each side at plan time (ADR 0008), not a cross-cloud dependency.
 The runbooks are a fourth kind of input. They are not modules (a stack does
 not call them) and not tenant values (a cell names a file, never a body); the
 `azure-automation` stack reads each file and publishes it, so a runbook edit
-is a plan diff like any other.
+is a plan diff like any other. One runbook is assembled rather than read: the
+authentication methods drift runbook names a library under `automation/lib`
+and the runbooks module inlines it between two marker lines at plan time, so
+the diff logic exists once and is also dot-sourced by the workstation script.
+
+The desired-state folder `policies/entra/authentication-methods` is a fifth
+kind, for the one object that has no Terraform resource. The stack publishes
+each file as an Automation variable (so the runbook reads what the repository
+says), and the pipelines run `scripts/Set-AuthenticationMethods.ps1` against
+the folder directly: read-only with `-FailOnDrift` on a pull request, and
+`-DryRun:$false` in the release train after the corp governance cell (ADR
+0012). Nothing under `policies/` is state; the live tenant is compared with
+the files every time.
 
 ## Inside the stack
 
@@ -224,12 +250,14 @@ flowchart TB
     RG["data azurerm_resource_group (by name)"]
     UAI["module automation_account\nazurerm_user_assigned_identity"]
     AA["module automation_account\nazurerm_automation_account\n+ variables"]
-    FILES["automation/runbooks/*.ps1\nfile() + filesha256()"]
+    FILES["automation/runbooks/*.ps1\n+ automation/lib inlined at markers\nsha256()"]
+    DS["policies/entra/authentication-methods/*.json\nfile() into AuthMethods_* string variables"]
     RBK["module runbooks\nazurerm_automation_runbook\nazurerm_automation_schedule\nazurerm_automation_job_schedule"]
     GSP["data azuread_service_principal\n(Microsoft Graph, app_role_ids by name)"]
     GRANT["module graph_grants\nazuread_app_role_assignment"]
     RG --> UAI
     RG --> AA
+    DS -->|variables| AA
     UAI -->|identity_ids| AA
     AA -->|account name, location| RBK
     UAI -->|client_id into every job schedule as clientid| RBK
@@ -259,7 +287,11 @@ The runbook body is the file in the repository, hashed into a tag so the plan
 and the portal both show the deployed revision. What the identity may do is a
 list of Graph permission names in the cell (ADR 0010); where a guest is on the
 lifecycle ladder is a group membership the runbook resolves by display name
-(ADR 0011).
+(ADR 0011). The authentication methods desired state reaches the drift
+runbook the same way the client ID does, through the account: one string
+variable per JSON file, published from the repository, so the Sunday
+comparison is against the merged files and never against a portal-edited
+copy (ADR 0012).
 
 ## Across the two clouds: Entra to Identity Center
 
@@ -409,8 +441,17 @@ subsidiary plan is still taken at merge time, in parallel, and applied unchanged
 after the `subsidiary` environment gate. Concurrency groups are per cell
 (`azure-cell-corp-azure-pim-governance`), not per tenant, because two cells of
 one tenant have separate state files and can safely run side by side. A change
-under `automation/runbooks` triggers the train like a module change, because the
-runbook body is what the automation cell publishes.
+under `automation/runbooks`, `automation/lib`, or
+`policies/entra/authentication-methods` triggers the train like a module
+change, because the runbook body, the inlined library, and the desired-state
+variables are what the automation cell publishes. The train has one job that
+is not a Terraform apply: `apply-corp-auth-methods` runs
+`scripts/Set-AuthenticationMethods.ps1 -DryRun:$false` with a Graph token from
+the same OIDC login, after `apply-corp-pim` (the policy names a group that
+cell creates) and before the subsidiary gate. The pull request workflow runs
+the same script read-only with `-FailOnDrift` when the folder, the script, or
+the library changes, so the reviewer sees the field-level report before
+anything is patched (ADR 0012).
 
 `aws-release` has the same shape with commercial in the dev position and GovCloud
 in the prod position. Each job names its GitHub environment, and the environment
@@ -431,6 +472,7 @@ that cell is applied from a workstation (ADR 0008).
 | Read/write state in S3 and talk to Identity Center, per partition | GitHub OIDC -> `aws-actions/configure-aws-credentials` -> role from the partition's environment variables (`AWS_PLAN_ROLE_ARN`, `AWS_APPLY_ROLE_ARN`) | Minutes |
 | Provision users and groups into Identity Center | SCIM endpoint and token issued by the AWS console, held as a GitHub environment secret, passed as the sensitive `TF_VAR_scim_credentials`; stored by the provider in state and in saved plans, rotated from the AWS console | Until rotated |
 | Run scheduled identity hygiene against Graph (outside CI) | User-assigned managed identity on the Automation account, created by Terraform; Graph app roles granted by Terraform; each job asks the Automation identity endpoint for a token with the identity's `client_id` | About an hour, per job |
+| Compare and patch the authentication methods policy (in CI) | Same `azure/login@v2` OIDC identity as the Terraform jobs; `az account get-access-token --resource-type ms-graph` inside the step, masked, passed as `-AccessToken`, never written to a file or an output | Job |
 | Comment on PR | Workflow `GITHUB_TOKEN` with `pull-requests: write` | Job |
 
 The Azure identity is split by purpose and tenant. `AZ_CLIENT_ID`, `AZ_TENANT_ID`,

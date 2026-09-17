@@ -1,0 +1,12 @@
+{
+  "@odata.type": "#microsoft.graph.softwareOathAuthenticationMethodConfiguration",
+  "state": "enabled",
+  "includeTargets": [
+    {
+      "targetType": "group",
+      "id": "all_users",
+      "isRegistrationRequired": false
+    }
+  ],
+  "excludeTargets": []
+}

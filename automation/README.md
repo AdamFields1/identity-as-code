@@ -2,7 +2,8 @@
 
 Runbooks that keep the identity estate tidy between Terraform applies: things
 that Terraform should not own because they are decisions made against live data
-every day (which credentials have expired, which guests have gone quiet), but
+every day (which credentials have expired, which guests have gone quiet), or
+cannot own because no resource exists (the authentication methods policy), but
 that still deserve code, review, tests, and a deployment pipeline. The runbooks
 are deployed as code by `stacks/azure-automation`; the rules below are what every
 runbook in this directory follows, and what a reviewer checks a new one against.
@@ -10,16 +11,21 @@ runbook in this directory follows, and what a reviewer checks a new one against.
 ```
 automation/
   runbooks/
-    Invoke-AppCredentialHygiene.ps1   expiring and expired app credentials: digest owners, remove after a grace period
-    Invoke-GuestLifecycle.ps1         dormant guests: warn, disable, purge, with the stage held in group membership
+    Invoke-AppCredentialHygiene.ps1        expiring and expired app credentials: digest owners, remove after a grace period
+    Invoke-GuestLifecycle.ps1              dormant guests: warn, disable, purge, with the stage held in group membership
+    Invoke-AuthenticationMethodsDrift.ps1  authentication methods policy versus policies/entra/authentication-methods: digest, enforce when allowed
+  lib/
+    AuthenticationMethods.Common.ps1       diff, plan, apply, export; dot-sourced by the script, inlined into the runbook at deploy time
   tests/
-    *.Tests.ps1                       Pester tests, offline, Graph mocked
-    Invoke-Tests.ps1                  parse gate plus Pester runner
+    *.Tests.ps1                            Pester tests, offline, Graph mocked
+    Invoke-Tests.ps1                       parse gate plus Pester runner
 ```
 
 The related export helper, `scripts/Export-PimEligibilityImports.ps1`, lives with
 the other adoption scripts because it is run from a workstation, not from
-Automation.
+Automation. `scripts/Set-AuthenticationMethods.ps1` is the workstation and
+pipeline face of the drift runbook: same library, same comparison, plus
+`-FailOnDrift` for a pull request check and `-Export` for adopting a tenant.
 
 ## Design rules
 
@@ -75,7 +81,22 @@ runbook knows which cloud it is in.
 logging, identity, and transport helpers are repeated in each runbook rather than
 imported from a module. That is a deliberate trade: a runbook can be read top to
 bottom and deployed with `content = file(...)`, and there is no module asset to
-version separately.
+version separately. The one exception is logic that a runbook must share
+byte-for-byte with a workstation script: it lives under `automation/lib`, the
+script dot-sources it, and the runbook carries a `# INLINE_LIBRARY_BEGIN` /
+`# INLINE_LIBRARY_END` block that `stacks/azure-automation` fills with the
+file at deploy time, so what is published is still one file. See
+`modules/azure/automation-runbooks/README.md` for why that beats a module
+asset, and [ADR 0012](../docs/adr/0012-authentication-methods-policy-as-desired-state.md).
+
+**Desired state comes through the account, never from a portal-editable place.**
+The drift runbook reads its desired state from Automation variables that the
+stack publishes from `policies/entra/authentication-methods` with `file()`
+(`AuthMethods_Policy`, `AuthMethods_Fido2`, and so on). A file edit is a plan
+diff on a variable; the runbook compares the tenant with what the repository
+says, and the two guards it applies (never disable the last enabled method,
+never send `policyMigrationState` without `-AllowMigrationStateChange $true`)
+are the same guards the script applies in the pipeline.
 
 **Windows PowerShell 5.1 and PowerShell 7.** The runbooks are deployed as
 `PowerShell72` but must also run under 5.1 on a workstation, so there is no
@@ -107,6 +128,7 @@ wrote, and that is the record a ticket points at.
 |---------|-------------------------|-----|
 | `Invoke-AppCredentialHygiene` | `Application.ReadWrite.All`, `Directory.Read.All`, `Mail.Send` | read registrations and credentials, remove them, read owners, send digests |
 | `Invoke-GuestLifecycle` | `User.ReadWrite.All`, `Group.ReadWrite.All`, `AuditLog.Read.All`, `Mail.Send` | read guests with `signInActivity`, disable and delete, write stage groups, read sponsors, send warnings |
+| `Invoke-AuthenticationMethodsDrift` | `Policy.ReadWrite.AuthenticationMethod` (`Policy.Read.AuthenticationMethod` is enough for a dry run), `Group.Read.All` (covered by `Group.ReadWrite.All`), `Mail.Send` | read and patch the authentication methods policy, resolve group names, send the drift digest |
 
 `modules/entra/graph-app-role-grant` grants these to the managed identity's
 service principal as code. `Mail.Send` as an application permission lets the
@@ -137,7 +159,12 @@ To run a runbook against a real tenant from a workstation, dry:
 $token = az account get-access-token --resource-type ms-graph --query accessToken -o tsv
 .\runbooks\Invoke-AppCredentialHygiene.ps1 -SenderMailbox iam-noreply@corp.example.com -AccessToken $token -ReportPath .\out\credentials.csv
 .\runbooks\Invoke-GuestLifecycle.ps1 -SenderMailbox iam-noreply@corp.example.com -AccessToken $token -ReportPath .\out\guests.csv
+.\runbooks\Invoke-AuthenticationMethodsDrift.ps1 -SenderMailbox iam-noreply@corp.example.com -Recipients iam@corp.example.com -DesiredStatePath ..\policies\entra\authentication-methods -AccessToken $token
 ```
+
+The drift runbook takes `-DesiredStatePath` on a workstation because
+`Get-AutomationVariable` exists only inside the sandbox; in Automation it
+reads the variables and the parameter is left empty.
 
 Your own account needs the delegated equivalents of the permissions above for a
 dry run to read everything. Do not pass `-DryRun:$false` from a workstation; the
@@ -155,3 +182,7 @@ the tenant cell declares.
    inputs as parameters, and test the boundaries.
 5. Add the file to the `runbooks` map in the tenant cell with a schedule and
    `DryRun` on.
+6. If the runbook must share logic with a workstation script, put the shared
+   functions in `automation/lib/<Name>.ps1` with no transport or logging of
+   their own, add the two `INLINE_LIBRARY` marker lines with a dot-source
+   between them, and name the file as `library` in the cell.

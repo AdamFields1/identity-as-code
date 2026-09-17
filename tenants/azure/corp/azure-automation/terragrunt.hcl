@@ -3,17 +3,22 @@
 # Values only. No resources, no provider configuration, no logic. If you find
 # yourself adding a resource here, it belongs in the stack.
 #
-# Two runbooks, two schedules, both dry. dry_run = true is the shipped default
-# and stays true until the job output of a few dry runs has been read and the
-# counts look right; flipping it is a one-line change here whose plan shows
-# the job schedules being replaced. The three lifecycle stage groups the guest
-# runbook names below are ordinary security groups created with the tenant's
-# other groups, and the sender mailbox is a shared mailbox restricted to this
-# identity by an Exchange application access policy applied outside Terraform.
+# Three runbooks, three schedules, all dry. dry_run = true is the shipped
+# default and stays true until the job output of a few dry runs has been read
+# and the counts look right; flipping it is a one-line change here whose plan
+# shows the job schedules being replaced. The three lifecycle stage groups the
+# guest runbook names below are ordinary security groups created with the
+# tenant's other groups, and the sender mailbox is a shared mailbox restricted
+# to this identity by an Exchange application access policy applied outside
+# Terraform. The authentication methods runbook compares the tenant with the
+# JSON under policies/entra/authentication-methods, which desired_state_files
+# publishes as Automation variables (docs/adr/0012); dry, it mails nothing and
+# logs the digest it would send.
 #
 # Schedule start_time values are anchors: the date must be in the future when
 # the schedule is first created, and only the time of day (and the weekday for
-# the weekly one) matters afterwards. 2027-01-04 is a Monday.
+# the weekly ones) matters afterwards. 2027-01-04 is a Monday and 2027-01-10
+# is a Sunday.
 #
 # tenant_id and subscription_id are not set here. root.hcl supplies them from
 # ARM_TENANT_ID and ARM_SUBSCRIPTION_ID so no cell ever contains a GUID.
@@ -51,7 +56,8 @@ inputs = {
 
   # -------------------------------------------------------------------------
   # Schedules. Credential hygiene daily at 06:00 UTC, guest lifecycle weekly
-  # on Monday at 07:00 UTC.
+  # on Monday at 07:00 UTC, authentication methods drift weekly on Sunday at
+  # 08:00 UTC.
   # -------------------------------------------------------------------------
   schedules = {
     daily-0600-utc = {
@@ -71,6 +77,16 @@ inputs = {
       timezone    = "Etc/UTC"
       start_time  = "2027-01-04T07:00:00Z"
       week_days   = ["Monday"]
+    }
+
+    weekly-sunday-0800-utc = {
+      name        = "weekly-sunday-0800-utc"
+      description = "Every Sunday at 08:00 UTC."
+      frequency   = "Week"
+      interval    = 1
+      timezone    = "Etc/UTC"
+      start_time  = "2027-01-10T08:00:00Z"
+      week_days   = ["Sunday"]
     }
   }
 
@@ -111,5 +127,35 @@ inputs = {
         fallbackrecipient = "iam@corp.example.com"
       }
     }
+
+    authentication-methods-drift = {
+      name         = "Invoke-AuthenticationMethodsDrift"
+      file         = "Invoke-AuthenticationMethodsDrift.ps1"
+      library      = "AuthenticationMethods.Common.ps1"
+      description  = "Weekly comparison of the authentication methods policy with the repository's desired state, mailed as a digest when they differ."
+      schedule_key = "weekly-sunday-0800-utc"
+      parameters = {
+        # A string[] runbook parameter is passed from a job schedule as a JSON array.
+        recipients                = "[\"iam@corp.example.com\"]"
+        allowmigrationstatechange = "false"
+      }
+    }
+  }
+
+  # -------------------------------------------------------------------------
+  # Desired-state files published as Automation string variables, one per
+  # file, named as Invoke-AuthenticationMethodsDrift expects them. Paths are
+  # relative to the repository root.
+  # -------------------------------------------------------------------------
+  desired_state_files = {
+    AuthMethods_Policy                 = "policies/entra/authentication-methods/policy.json"
+    AuthMethods_Fido2                  = "policies/entra/authentication-methods/methods/Fido2.json"
+    AuthMethods_MicrosoftAuthenticator = "policies/entra/authentication-methods/methods/MicrosoftAuthenticator.json"
+    AuthMethods_TemporaryAccessPass    = "policies/entra/authentication-methods/methods/TemporaryAccessPass.json"
+    AuthMethods_Sms                    = "policies/entra/authentication-methods/methods/Sms.json"
+    AuthMethods_Voice                  = "policies/entra/authentication-methods/methods/Voice.json"
+    AuthMethods_Email                  = "policies/entra/authentication-methods/methods/Email.json"
+    AuthMethods_SoftwareOath           = "policies/entra/authentication-methods/methods/SoftwareOath.json"
+    AuthMethods_X509Certificate        = "policies/entra/authentication-methods/methods/X509Certificate.json"
   }
 }

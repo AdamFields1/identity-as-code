@@ -9,8 +9,8 @@ output "runbook_names" {
 }
 
 output "content_hashes" {
-  description = "Map of runbook key to the SHA-256 of the published file, the same value carried in the content_sha256 tag."
-  value       = { for k, r in var.runbooks : k => filesha256(r.content_path) }
+  description = "Map of runbook key to the SHA-256 of the published content (the file, with any library inlined), the same value carried in the content_sha256 tag."
+  value       = { for k in keys(var.runbooks) : k => sha256(local.runbook_content[k]) }
 }
 
 output "schedule_ids" {

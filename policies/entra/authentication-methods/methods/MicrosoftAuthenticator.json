@@ -1,0 +1,29 @@
+{
+  "@odata.type": "#microsoft.graph.microsoftAuthenticatorAuthenticationMethodConfiguration",
+  "state": "enabled",
+  "featureSettings": {
+    "displayAppInformationRequiredState": {
+      "state": "enabled",
+      "includeTarget": {
+        "targetType": "group",
+        "id": "all_users"
+      }
+    },
+    "displayLocationInformationRequiredState": {
+      "state": "enabled",
+      "includeTarget": {
+        "targetType": "group",
+        "id": "all_users"
+      }
+    }
+  },
+  "includeTargets": [
+    {
+      "targetType": "group",
+      "id": "all_users",
+      "isRegistrationRequired": false,
+      "authenticationMode": "any"
+    }
+  ],
+  "excludeTargets": []
+}

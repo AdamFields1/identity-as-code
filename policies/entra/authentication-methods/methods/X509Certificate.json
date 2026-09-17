@@ -1,0 +1,23 @@
+{
+  "@odata.type": "#microsoft.graph.x509CertificateAuthenticationMethodConfiguration",
+  "state": "enabled",
+  "certificateUserBindings": [
+    {
+      "x509CertificateField": "PrincipalName",
+      "userProperty": "userPrincipalName",
+      "priority": 1
+    }
+  ],
+  "authenticationModeConfiguration": {
+    "x509CertificateAuthenticationDefaultMode": "x509CertificateMultiFactor",
+    "rules": []
+  },
+  "includeTargets": [
+    {
+      "targetType": "group",
+      "id": "PIM Privileged Users",
+      "isRegistrationRequired": false
+    }
+  ],
+  "excludeTargets": []
+}

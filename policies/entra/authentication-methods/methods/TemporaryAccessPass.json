@@ -1,0 +1,17 @@
+{
+  "@odata.type": "#microsoft.graph.temporaryAccessPassAuthenticationMethodConfiguration",
+  "state": "enabled",
+  "defaultLifetimeInMinutes": 60,
+  "defaultLength": 8,
+  "minimumLifetimeInMinutes": 10,
+  "maximumLifetimeInMinutes": 480,
+  "isUsableOnce": true,
+  "includeTargets": [
+    {
+      "targetType": "group",
+      "id": "Onboarding TAP",
+      "isRegistrationRequired": false
+    }
+  ],
+  "excludeTargets": []
+}

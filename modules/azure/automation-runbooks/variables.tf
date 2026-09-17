@@ -44,6 +44,11 @@ variable "runbooks" {
                                because the runbooks here log through it.
     log_progress             : keep the progress stream. Default false.
     runtime_environment_name : optional runtime environment for accounts that use them.
+    library_path             : optional path to a .ps1 whose content replaces the block
+                               between the "# INLINE_LIBRARY_BEGIN" and "# INLINE_LIBRARY_END"
+                               marker lines of the runbook file at deploy time, so shared
+                               logic is versioned once and the published runbook is still
+                               one file. Each marker must appear exactly once. See README.
     tags                     : optional extra tags; content_sha256 is always added.
   EOT
 
@@ -55,6 +60,7 @@ variable "runbooks" {
     log_verbose              = optional(bool, true)
     log_progress             = optional(bool, false)
     runtime_environment_name = optional(string)
+    library_path             = optional(string)
     tags                     = optional(map(string), {})
   }))
 
@@ -81,6 +87,21 @@ variable "runbooks" {
   validation {
     condition     = alltrue([for r in var.runbooks : fileexists(r.content_path)])
     error_message = "Every runbook content_path must point at an existing file."
+  }
+
+  validation {
+    condition     = alltrue([for r in var.runbooks : r.library_path == null || fileexists(r.library_path)])
+    error_message = "Every runbook library_path, when set, must point at an existing file."
+  }
+
+  validation {
+    condition = alltrue([
+      for r in var.runbooks : r.library_path == null || (
+        length(split("# INLINE_LIBRARY_BEGIN", file(r.content_path))) == 2 &&
+        length(split("# INLINE_LIBRARY_END", file(r.content_path))) == 2
+      )
+    ])
+    error_message = "A runbook with library_path must contain the lines \"# INLINE_LIBRARY_BEGIN\" and \"# INLINE_LIBRARY_END\" exactly once each."
   }
 }
 

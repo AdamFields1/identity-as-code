@@ -103,7 +103,7 @@ variable "graph_environment" {
 }
 
 variable "graph_app_roles" {
-  description = "Microsoft Graph application permissions granted to the runbook identity, by name. The default is the union the two shipped runbooks need; narrow it in a cell that deploys fewer."
+  description = "Microsoft Graph application permissions granted to the runbook identity, by name. The default is the union the three shipped runbooks need; narrow it in a cell that deploys fewer (a cell that runs the authentication methods runbook dry only needs Policy.Read.AuthenticationMethod in place of Policy.ReadWrite.AuthenticationMethod)."
   type        = list(string)
   default = [
     "Application.ReadWrite.All",
@@ -112,6 +112,7 @@ variable "graph_app_roles" {
     "Mail.Send",
     "Directory.Read.All",
     "AuditLog.Read.All",
+    "Policy.ReadWrite.AuthenticationMethod",
   ]
 
   validation {
@@ -130,6 +131,8 @@ variable "runbooks" {
 
     name         : runbook name in the account.
     file         : file name under automation/runbooks in this repository.
+    library      : optional file name under automation/lib, inlined into the runbook
+                   between its INLINE_LIBRARY marker lines at deploy time.
     description  : optional.
     schedule_key : key into schedules.
     parameters   : runbook-specific parameters as strings, keys lowercase. The stack
@@ -140,6 +143,7 @@ variable "runbooks" {
   type = map(object({
     name         = string
     file         = string
+    library      = optional(string)
     description  = optional(string, "Managed by Terraform. See the identity-as-code repository.")
     schedule_key = string
     parameters   = optional(map(string), {})
@@ -153,6 +157,11 @@ variable "runbooks" {
   validation {
     condition     = alltrue([for r in var.runbooks : can(regex("^[A-Za-z0-9_-]+\\.ps1$", r.file))])
     error_message = "file must be a bare .ps1 file name under automation/runbooks, with no path separators."
+  }
+
+  validation {
+    condition     = alltrue([for r in var.runbooks : r.library == null || can(regex("^[A-Za-z0-9_.-]+\\.ps1$", r.library))])
+    error_message = "library must be a bare .ps1 file name under automation/lib, with no path separators."
   }
 
   validation {
@@ -170,6 +179,35 @@ variable "runbooks" {
       for r in var.runbooks : [for k in keys(r.parameters) : !contains(["clientid", "environment", "sendermailbox", "dryrun"], k)]
     ]))
     error_message = "clientid, environment, sendermailbox, and dryrun are set by the stack from its own inputs; do not pass them per runbook."
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Desired-state files published as Automation variables.
+# ---------------------------------------------------------------------------
+
+variable "desired_state_files" {
+  description = <<-EOT
+    Files to publish as Automation string variables, keyed by variable name,
+    each value a path relative to the repository root. The variable holds the
+    file's text. Invoke-AuthenticationMethodsDrift reads AuthMethods_Policy and
+    AuthMethods_<Id> for each method it manages; the corp cell lists
+    policies/entra/authentication-methods/policy.json and methods/*.json. A
+    file edit is a plan diff on the variable, so the runbook always compares
+    the tenant against what the repository says (docs/adr/0012).
+  EOT
+
+  type    = map(string)
+  default = {}
+
+  validation {
+    condition     = alltrue([for name in keys(var.desired_state_files) : can(regex("^[A-Za-z][A-Za-z0-9_-]{0,127}$", name))])
+    error_message = "desired_state_files keys are Automation variable names: a letter followed by letters, digits, hyphens, and underscores."
+  }
+
+  validation {
+    condition     = alltrue([for p in values(var.desired_state_files) : can(regex("^[A-Za-z0-9_./-]+\\.json$", p)) && !can(regex("(^|/)\\.\\.(/|$)", p))])
+    error_message = "desired_state_files values must be repository-relative paths to .json files, with no parent directory segments."
   }
 }
 

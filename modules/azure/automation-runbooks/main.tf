@@ -24,6 +24,36 @@
 #   3. Job schedule parameter keys must be lowercase. Azure Automation
 #      normalises them and the provider compares against the normalised form,
 #      so a mixed-case key produces a permanent diff. Validation rejects it.
+#
+# Shared library inlining. Azure Automation runs one file, and a plain .ps1
+# cannot be a module asset (azurerm_automation_module takes a packaged
+# module from a URL, which is a second artifact to build, host, and version).
+# A runbook that shares logic with a workstation script therefore carries two
+# marker lines, and when library_path is set the block between them is
+# replaced with the library file's content at plan time. The runbook keeps a
+# dot-source of the same file inside the block for workstation runs and
+# tests, so both paths execute identical code. Plain split and join are used
+# rather than a regex replace because a replacement string containing "$"
+# (every PowerShell file) would be read as a backreference.
+
+locals {
+  library_begin = "# INLINE_LIBRARY_BEGIN"
+  library_end   = "# INLINE_LIBRARY_END"
+
+  runbook_content = {
+    for key, r in var.runbooks : key => (
+      r.library_path == null ? file(r.content_path) : join("", [
+        split(local.library_begin, file(r.content_path))[0],
+        local.library_begin,
+        "\n",
+        file(r.library_path),
+        "\n",
+        local.library_end,
+        split(local.library_end, file(r.content_path))[1],
+      ])
+    )
+  }
+}
 
 resource "azurerm_automation_runbook" "this" {
   for_each = var.runbooks
@@ -37,11 +67,11 @@ resource "azurerm_automation_runbook" "this" {
   log_verbose  = each.value.log_verbose
   log_progress = each.value.log_progress
   description  = each.value.description
-  content      = file(each.value.content_path)
+  content      = local.runbook_content[each.key]
 
   runtime_environment_name = each.value.runtime_environment_name
 
-  tags = merge(var.tags, each.value.tags, { content_sha256 = filesha256(each.value.content_path) })
+  tags = merge(var.tags, each.value.tags, { content_sha256 = sha256(local.runbook_content[each.key]) })
 }
 
 resource "azurerm_automation_schedule" "this" {

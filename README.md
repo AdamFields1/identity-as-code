@@ -9,7 +9,10 @@ Azure resource RBAC (custom roles, PIM policies, eligibilities), and AWS IAM
 Identity Center (permission sets and group assignments, in commercial and GovCloud).
 Alongside the resources, the identity hygiene that cannot be a resource because
 it depends on live data (credential expiry, guest dormancy) runs as Azure
-Automation runbooks that are themselves deployed by a stack.
+Automation runbooks that are themselves deployed by a stack, and the one
+policy that cannot be a resource because the provider has none for it (the
+Entra authentication methods policy) is desired-state JSON enforced by a
+script in the release train and watched by a runbook.
 
 This is a portfolio repository by Adam Fields. It exists to show design decisions and
 the reasoning behind them, not to be a feature-complete wrapper for any provider.
@@ -45,6 +48,7 @@ decision records carry the reasoning that the commits do not.
 | Automation account with a user-assigned identity, account variables, optional module assets | `modules/azure/automation-account` | `azurerm_automation_account`, `azurerm_user_assigned_identity`, `azurerm_automation_variable_string`, `azurerm_automation_variable_bool`, `azurerm_automation_module` |
 | Runbooks published from repository files, schedules, and job schedules with parameters | `modules/azure/automation-runbooks` | `azurerm_automation_runbook`, `azurerm_automation_schedule`, `azurerm_automation_job_schedule` |
 | Microsoft Graph application permissions for a managed identity, by name | `modules/entra/graph-app-role-grant` | `azuread_app_role_assignment` |
+| Entra authentication methods policy (per-method state, targets, and settings; registration campaign; report suspicious activity; system-preferred MFA), groups by display name | `policies/entra/authentication-methods` with `scripts/Set-AuthenticationMethods.ps1` and `automation/runbooks/Invoke-AuthenticationMethodsDrift.ps1` | none: Graph `PATCH` on patch-only singletons; delivered as `azurerm_automation_variable_string` and a pipeline job |
 
 Nine stacks compose those modules into deployable units:
 
@@ -58,7 +62,7 @@ Nine stacks compose those modules into deployable units:
 | `stacks/azure-pim-governance` | PIM policies, then eligibilities, in that order | `tenants/azure/{corp,subsidiary}/azure-pim-governance` |
 | `stacks/entra-aws-federation` | one Identity Center gallery app per AWS partition, fed from one list of convention-named groups | `tenants/azure/corp/entra-aws-federation` |
 | `stacks/aws-identity-center` | permission sets, then account assignments, one assignment per group name | `tenants/aws/{commercial,govcloud}/aws-identity-center` |
-| `stacks/azure-automation` | Automation account and identity, then the runbooks in `automation/runbooks` and the identity's Graph permissions | `tenants/azure/corp/azure-automation` |
+| `stacks/azure-automation` | Automation account and identity, then the runbooks in `automation/runbooks` (with `automation/lib` inlined), the desired-state files in `policies/` as variables, and the identity's Graph permissions | `tenants/azure/corp/azure-automation` |
 
 The subsidiary tenant has no `entra-app-registrations` cell because application
 onboarding is confined to corp, no `azure-rbac-roles` cell because it assigns built-in
@@ -88,8 +92,11 @@ identity-as-code/
     azure-automation/
     aws-identity-center/
   automation/
-    runbooks/                   PowerShell runbooks deployed by stacks/azure-automation: credential hygiene, guest lifecycle
+    runbooks/                   PowerShell runbooks deployed by stacks/azure-automation: credential hygiene, guest lifecycle, authentication methods drift
+    lib/                        logic shared by a runbook and a script, inlined into the runbook at deploy time
     tests/                      Pester tests (Graph mocked) and the runner
+  policies/
+    entra/authentication-methods/   desired-state JSON for the authentication methods policy: policy.json and methods/<Id>.json, groups by display name
   tenants/
     okta/                       one directory per tenant, values only, Terragrunt wiring
       root.hcl                  S3 state, Okta provider generation, adoption hook
@@ -116,7 +123,7 @@ identity-as-code/
       govcloud/
         aws-identity-center/terragrunt.hcl
   .github/workflows/            PR validation and release trains: okta-* (dev -> prod), azure-* (corp -> subsidiary), aws-* (commercial -> govcloud)
-  scripts/                      PowerShell helpers to adopt an existing tenant, export drift, and import live PIM eligibilities
+  scripts/                      PowerShell helpers to adopt an existing tenant, export drift, import live PIM eligibilities, and enforce the authentication methods policy
   tests/                        zero-change import gate
   docs/                         architecture diagrams and decision records
 ```
@@ -164,6 +171,23 @@ transition is in the audit log and reversible by a helpdesk agent. The runbooks
 have Pester tests that mock Graph and assert the boundaries. See
 [ADR 0010](docs/adr/0010-automation-runs-on-managed-identity-with-dry-run-defaults.md)
 and [ADR 0011](docs/adr/0011-lifecycle-stage-tracked-in-groups.md).
+
+**The authentication methods policy is desired-state JSON, not a resource.**
+The azuread provider has no resource for it and the Graph objects are
+patch-only singletons with no create, destroy, or import, so
+`policies/entra/authentication-methods` holds one JSON file per method
+configuration and one for the policy-level settings, written in the Graph
+shape with group display names where Graph wants object IDs.
+`scripts/Set-AuthenticationMethods.ps1` resolves the names, diffs the files
+against one `GET`, and patches the drift; the release train runs it after the
+corp governance cell and the pull request workflow runs it read-only with
+`-FailOnDrift`. `Invoke-AuthenticationMethodsDrift` runs the same comparison
+every Sunday from the same files, published as Automation variables by the
+automation stack, and mails a digest when the tenant has moved. The script
+never disables the last enabled method and never sends `policyMigrationState`
+without an explicit switch, because that one field retires the legacy MFA and
+SSPR settings tenant-wide. See
+[ADR 0012](docs/adr/0012-authentication-methods-policy-as-desired-state.md).
 
 **Path is environment, via Terragrunt.** `tenants/okta/dev`, `tenants/okta/prod`,
 `tenants/azure/corp`, `tenants/azure/subsidiary`, `tenants/aws/commercial`, and
@@ -305,6 +329,13 @@ in the cell, because renewed eligibilities get new schedule IDs and state must
 catch up before an import file is trusted. `scripts/Export-EntraDrift.ps1` is
 the equivalent for application registrations.
 
+For the authentication methods policy there is nothing to import.
+`scripts/Set-AuthenticationMethods.ps1 -Export $true` writes the live policy
+into `policies/entra/authentication-methods` with group IDs replaced by
+display names; trim the files to the fields you mean to manage, then run the
+script without `-Export` and expect an empty drift table, which is the same
+zero-change gate applied to an object Terraform cannot hold.
+
 ## Deliberately out of scope
 
 - Users and group memberships. The directory of record owns those. Every stack
@@ -377,6 +408,22 @@ job schedule string `"false"` (if it does not, the failure is a job that errors
 on parameter binding, never a live run), that the Automation identity endpoint
 accepts the `client_id` query parameter for the user-assigned identity, and that
 `signInActivity` is licensed in the tenant. No live tenant was used.
+
+The authentication methods pieces (`policies/entra/authentication-methods`,
+`scripts/Set-AuthenticationMethods.ps1`, `automation/lib`, the drift runbook,
+and the `desired_state_files` and `library` inputs of the automation stack)
+were written the same way: every field name in the JSON was checked against
+the Microsoft Graph reference pages for `authenticationMethodsPolicy` and
+each `authenticationMethodConfiguration` subtype, and the tests run the
+shipped files against a fixture of the beta `GET` response (36 tests across
+two files) and assert zero drift before flipping fields one at a time. What
+a first live run should confirm: that a tenant which has migrated to passkey
+profiles accepts a Fido2 `includeTargets` entry without `allowedPasskeyProfiles`
+(if not, the folder README says what to add), that `PATCH` on the policy
+object accepts `policyMigrationState` when the guard is lifted (the reference
+lists it as a property but not in the updatable table), and that the
+`string[]` runbook parameter binds from the job schedule's JSON array. Run
+`-Export` into a scratch folder first and diff it against the shipped files.
 
 ## License
 

@@ -1,0 +1,4 @@
+{
+  "@odata.type": "#microsoft.graph.smsAuthenticationMethodConfiguration",
+  "state": "disabled"
+}

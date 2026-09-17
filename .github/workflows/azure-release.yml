@@ -4,6 +4,7 @@
 #     |-- plan-corp-roles ---> apply-corp-roles ---> plan-corp-pim ---> apply-corp-pim
 #     |                                                                      |
 #     |                                          plan-corp-automation ---> apply-corp-automation
+#     |                                          apply-corp-auth-methods ----+
 #     |                                                                      \
 #     |-- plan-subsidiary-pim (merge-time plan, saved as artifact)            \
 #                 \                                                            \
@@ -18,7 +19,10 @@
 # cells (docs/adr/0005), paid here rather than in a tenant file. The
 # automation cell has no plan-time dependency on the others; it follows the
 # governance cell only so that corp is completely applied before the
-# subsidiary gate opens.
+# subsidiary gate opens. The authentication methods policy is not a Terraform
+# cell at all (docs/adr/0012): apply-corp-auth-methods runs the desired-state
+# script after apply-corp-pim, because the policy names groups that cell
+# creates, and the gate waits for it like any other corp apply.
 #
 # Subsidiary is the gated tenant, the way prod is for Okta. Its plan is taken
 # at merge time and saved; the reviewer approves that exact plan. If subsidiary
@@ -54,6 +58,9 @@ on:
       - "stacks/entra-*/**"
       - "tenants/azure/**"
       - "automation/runbooks/**"
+      - "automation/lib/**"
+      - "policies/entra/authentication-methods/**"
+      - "scripts/Set-AuthenticationMethods.ps1"
       - ".github/workflows/azure-release.yml"
   workflow_dispatch:
 
@@ -342,6 +349,50 @@ jobs:
           terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/corp-azure-automation.tfplan"
 
   # ---------------------------------------------------------------------------
+  apply-corp-auth-methods:
+    name: apply corp authentication methods policy
+    # Not a Terraform cell: the authentication methods policy has no resource
+    # in the azuread provider and its objects are patch-only singletons
+    # (docs/adr/0012). scripts/Set-AuthenticationMethods.ps1 reads the JSON
+    # under policies/entra/authentication-methods, resolves group names, and
+    # patches the drift. It follows apply-corp-pim because the policy names
+    # groups that cell creates. The corp writer identity needs
+    # Policy.ReadWrite.AuthenticationMethod and Group.Read.All on Graph; the
+    # token comes from the same OIDC login as the Terraform jobs and is never
+    # written to a file, a step output, or the log.
+    needs: [apply-corp-pim]
+    runs-on: ubuntu-latest
+    environment: corp
+    concurrency:
+      group: azure-corp-authentication-methods
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - name: Set-AuthenticationMethods (enforce)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $token = (az account get-access-token --resource-type ms-graph --query accessToken -o tsv | Select-Object -First 1)
+          if ([string]::IsNullOrWhiteSpace($token)) { throw 'The Azure CLI returned no Microsoft Graph token.' }
+          $token = $token.Trim()
+          Write-Output "::add-mask::$token"
+          ./scripts/Set-AuthenticationMethods.ps1 -DesiredStatePath ./policies/entra/authentication-methods `
+            -DryRun:$false -FailOnDrift:$false -AccessToken $token -ReportPath ./out/auth-methods-corp.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: azure-auth-methods-corp-${{ github.sha }}
+          path: out/auth-methods-corp.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
   plan-subsidiary-pim:
     name: plan subsidiary/azure-pim-governance (merge-time)
     # Same backend guard as plan-corp-roles; this job has no needs, so it must
@@ -404,7 +455,7 @@ jobs:
   # ---------------------------------------------------------------------------
   subsidiary-gate:
     name: gate (subsidiary)
-    needs: [apply-corp-pim, apply-corp-automation, plan-subsidiary-pim]
+    needs: [apply-corp-pim, apply-corp-automation, apply-corp-auth-methods, plan-subsidiary-pim]
     runs-on: ubuntu-latest
     # The "subsidiary" environment carries required reviewers and a wait timer
     # (Settings -> Environments -> subsidiary -> Deployment protection rules).
@@ -424,6 +475,8 @@ jobs:
                assignable scopes, and no built-in role definition changed.
             4. The subsidiary plan artifact (azure-plan-subsidiary-azure-pim-governance-<sha>)
                shows the expected change set and no destroys you did not intend.
+            5. The authentication methods report (azure-auth-methods-corp-<sha>) shows the
+               patches you expected and no held policyMigrationState difference.
           EOF
       - name: Documented wait
         env:

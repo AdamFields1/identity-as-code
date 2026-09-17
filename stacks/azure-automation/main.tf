@@ -20,7 +20,16 @@
 # because Azure Automation normalises them (see the runbooks module).
 #
 # The runbook files come from automation/runbooks in this repository,
-# resolved relative to this stack the same way modules are.
+# resolved relative to this stack the same way modules are. A runbook that
+# names a library gets automation/lib/<library> inlined between its marker
+# lines by the runbooks module (see that module's README for why).
+#
+# Desired-state files are the third kind of input. The authentication methods
+# policy has no Terraform resource (docs/adr/0012), so its desired state is a
+# folder of JSON under policies/entra/authentication-methods; this stack
+# publishes each file as an Automation string variable so the drift runbook
+# compares the tenant against exactly what the repository says, and a file
+# edit is a plan diff on the variable like any other change.
 #
 # Deliberately NOT managed here: the resource group (platform bootstrap), the
 # three lifecycle stage groups and the exclusion group the guest runbook
@@ -31,13 +40,26 @@
 # the workspace).
 
 locals {
-  runbooks_directory = "${path.module}/../../automation/runbooks"
+  repository_root    = "${path.module}/../.."
+  runbooks_directory = "${local.repository_root}/automation/runbooks"
+  library_directory  = "${local.repository_root}/automation/lib"
 
   runbook_definitions = {
     for key, r in var.runbooks : key => {
       name         = r.name
       content_path = "${local.runbooks_directory}/${r.file}"
+      library_path = r.library == null ? null : "${local.library_directory}/${r.library}"
       description  = r.description
+    }
+  }
+
+  # One Automation string variable per desired-state file, holding the file's
+  # text. Read by Invoke-AuthenticationMethodsDrift with Get-AutomationVariable.
+  desired_state_variables = {
+    for name, relative_path in var.desired_state_files : name => {
+      type        = "string"
+      value       = file("${local.repository_root}/${relative_path}")
+      description = "Desired state published from ${relative_path} by stacks/azure-automation. Edit the file in the repository, never this variable."
     }
   }
 
@@ -71,12 +93,15 @@ module "automation_account" {
   identity_name       = var.identity_name
   tags                = var.tags
 
-  variables = {
-    TenantLabel      = { type = "string", value = var.tenant_label, description = "Tenant this account serves. Read by runbooks for log context." }
-    SenderMailbox    = { type = "string", value = var.sender_mailbox, description = "Shared mailbox the runbooks send from." }
-    GraphEnvironment = { type = "string", value = var.graph_environment, description = "National cloud: Global or USGov." }
-    DryRun           = { type = "bool", value = var.dry_run ? "true" : "false", description = "Account-wide dry-run default. Job schedules pass the same value explicitly." }
-  }
+  variables = merge(
+    {
+      TenantLabel      = { type = "string", value = var.tenant_label, description = "Tenant this account serves. Read by runbooks for log context." }
+      SenderMailbox    = { type = "string", value = var.sender_mailbox, description = "Shared mailbox the runbooks send from." }
+      GraphEnvironment = { type = "string", value = var.graph_environment, description = "National cloud: Global or USGov." }
+      DryRun           = { type = "bool", value = var.dry_run ? "true" : "false", description = "Account-wide dry-run default. Job schedules pass the same value explicitly." }
+    },
+    local.desired_state_variables,
+  )
 }
 
 # ---------------------------------------------------------------------------

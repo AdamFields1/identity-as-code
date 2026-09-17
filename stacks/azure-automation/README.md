@@ -4,10 +4,12 @@ The deployable unit for a tenant's identity hygiene runbooks. It composes three
 modules into one plan and one state file:
 
 1. `automation-account` creates the Automation account, its user-assigned
-   managed identity, and the account variables.
+   managed identity, and the account variables, including one variable per
+   desired-state file the cell lists.
 2. `automation-runbooks` publishes the runbooks in `automation/runbooks` from
-   their files, creates the schedules, and links each runbook to a schedule with
-   its parameters.
+   their files (with a shared library from `automation/lib` inlined where a
+   runbook names one), creates the schedules, and links each runbook to a
+   schedule with its parameters.
 3. `graph-app-role-grant` grants the identity the Microsoft Graph application
    permissions the runbooks need, by name.
 
@@ -33,9 +35,9 @@ validation, so two runbooks in one tenant cannot disagree about them.
 
 ## Dry run is the shipped default
 
-`dry_run` defaults to `true` and the corp cell sets it to `true` explicitly. Both
-runbooks read everything, compute everything, and log every action they would
-take. Flipping to `false` is a one-line change to the cell, reviewed in a pull
+`dry_run` defaults to `true` and the corp cell sets it to `true` explicitly. All
+three runbooks read everything, compute everything, and log every action they
+would take. Flipping to `false` is a one-line change to the cell, reviewed in a pull
 request whose plan shows the job schedules being replaced (every job schedule
 argument forces replacement). Nothing in the portal can turn a dry schedule live
 without that plan.
@@ -60,7 +62,23 @@ without that plan.
 
 The stack reads runbook bodies from `automation/runbooks`, resolved relative to
 the stack as `${path.module}/../../automation/runbooks/<file>`, the same way the
-stack reaches `../../modules`. A cell names the file only, never a path.
+stack reaches `../../modules`. A cell names the file only, never a path. A
+runbook entry may also name a `library` under `automation/lib`; the runbooks
+module inlines it between the runbook's marker lines at deploy time (see
+`modules/azure/automation-runbooks/README.md`).
+
+## Desired-state files as Automation variables
+
+The authentication methods policy has no Terraform resource
+([ADR 0012](../../docs/adr/0012-authentication-methods-policy-as-desired-state.md)).
+Its desired state is the JSON under `policies/entra/authentication-methods`,
+and `desired_state_files` publishes each file as an Automation string
+variable (`AuthMethods_Policy`, `AuthMethods_Fido2`, and so on) holding the
+file's text. `Invoke-AuthenticationMethodsDrift` reads those variables with
+`Get-AutomationVariable`, so the weekly comparison is against exactly what the
+repository says, a file edit is a plan diff on the variable, and nothing is
+read from a portal-editable place that could silently diverge. A cell lists
+repository-relative paths; the stack calls `file()` on each.
 
 ## Provider configuration
 
@@ -131,8 +149,9 @@ module "azure_automation" {
 | `dry_run` | `bool` | Passed to every runbook. Default `true`. |
 | `graph_environment` | `string` | `Global` or `USGov`. |
 | `graph_app_roles` | `list(string)` | Graph permissions for the identity. Defaults to the union the shipped runbooks need. |
-| `runbooks` | `map(object)` | Runbooks with file, schedule key, and parameters. |
+| `runbooks` | `map(object)` | Runbooks with file, optional library, schedule key, and parameters. |
 | `schedules` | `map(object)` | Schedules; see `modules/azure/automation-runbooks`. |
+| `desired_state_files` | `map(string)` | Variable name to repository-relative JSON path, published as Automation string variables. Default `{}`. |
 
 ## Outputs
 
