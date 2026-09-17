@@ -1,19 +1,29 @@
 # modules/azure/automation-account
 
-Manages an Azure Automation account, the user-assigned managed identity it runs
-as, the account variables runbooks read, and (optionally) module assets. It
-creates no runbooks; `modules/azure/automation-runbooks` does that against the
-account name this module outputs.
+Manages an Azure Automation account, the user-assigned managed identities it
+runs as, the account variables runbooks read, and (optionally) module assets.
+It creates no runbooks; `modules/azure/automation-runbooks` does that against
+the account name this module outputs.
 
 ## Design notes
 
-- **The identity is created here, user-assigned.** Its principal ID is what
-  `modules/entra/graph-app-role-grant` grants Graph permissions to, and its client
-  ID is what the runbooks pass to the Automation identity endpoint. A
+- **The identities are created here, user-assigned.** A principal ID is what
+  `modules/entra/graph-app-role-grant` grants Graph permissions to, and a client
+  ID is what a runbook passes to the Automation identity endpoint. A
   system-assigned identity cannot be granted anything until the account exists and
   is destroyed with it, so a rebuilt account would come back with no permissions.
-  User-assigned lets the identity, its grants, and the account share one plan and
-  lets the identity outlive the account.
+  User-assigned lets the identities, their grants, and the account share one plan
+  and lets an identity outlive the account.
+- **One identity, or one per privilege tier.** `identities` is a map keyed by
+  tier name, and every identity in it is attached to the account. A caller that
+  sets `identity_name` instead gets exactly one, under the key `default`, which
+  is what this module did before tiers existed; a `moved` block keeps that one
+  in state, so adopting the map changes nothing for a caller that keeps the
+  single form. Setting both is refused. Attaching several identities separates
+  what a runbook defect can reach, not what someone who can start a job in the
+  account can reach: any runbook can ask the identity endpoint for a token for
+  any identity attached to the account. See
+  [ADR 0016](../../../docs/adr/0016-one-identity-per-privilege-tier-in-one-automation-account.md).
 - **No local authentication.** `local_authentication_enabled` defaults to `false`.
   Terraform and the portal use Entra tokens; the runbooks talk to Graph, not to the
   account; nothing needs the agent registration keys.
@@ -36,7 +46,13 @@ module "automation_account" {
 
   name                = "aa-example-identity"
   resource_group_name = "rg-example-identity-automation"
-  identity_name       = "id-example-identity-automation"
+
+  # One identity per privilege tier. For the older single-identity form, set
+  # identity_name = "id-example-identity-automation" and leave identities out.
+  identities = {
+    observer  = { name = "id-example-automation-observer" }
+    lifecycle = { name = "id-example-automation-lifecycle" }
+  }
 
   variables = {
     TenantLabel   = { type = "string", value = "corp" }
@@ -53,7 +69,8 @@ module "automation_account" {
 | `name` | `string` | n/a | Automation account name. |
 | `resource_group_name` | `string` | n/a | Existing resource group, by name. |
 | `location` | `string` | `null` | Region; null uses the resource group's. |
-| `identity_name` | `string` | n/a | User-assigned identity name. |
+| `identity_name` | `string` | `null` | Single-identity form: the name of the one identity, created under the key `default`. |
+| `identities` | `map(object)` | `{}` | One entry per privilege tier, each with `name`. Empty uses `identity_name`. |
 | `sku_name` | `string` | `"Basic"` | `Basic` or `Free`. |
 | `local_authentication_enabled` | `bool` | `false` | Agent registration key auth. |
 | `public_network_access_enabled` | `bool` | `true` | Public endpoint access. |
@@ -69,18 +86,19 @@ module "automation_account" {
 | `automation_account_name` | Account name, for the runbooks module. |
 | `resource_group_name` | Resource group name. |
 | `location` | Region used. |
-| `identity_id` | Identity resource ID. |
-| `identity_name` | Identity name (its Entra display name). |
-| `identity_principal_id` | Identity service principal object ID, for Graph grants. |
-| `identity_client_id` | Identity client ID, for the identity endpoint. |
+| `identities` | Tier key to `{ id, name, principal_id, client_id }` for every identity. |
+| `identity_id` | The `default` identity's resource ID, or null with tiers. |
+| `identity_name` | The `default` identity's name (its Entra display name), or null. |
+| `identity_principal_id` | The `default` identity's service principal object ID, or null. |
+| `identity_client_id` | The `default` identity's client ID, or null. |
 | `variable_names` | Names created, by type. |
 
 ## Import
 
 ```hcl
 import {
-  to = module.automation_account.azurerm_user_assigned_identity.this
-  id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-identity-automation/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-example-identity-automation"
+  to = module.automation_account.azurerm_user_assigned_identity.this["observer"]
+  id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-identity-automation/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-example-automation-observer"
 }
 
 import {

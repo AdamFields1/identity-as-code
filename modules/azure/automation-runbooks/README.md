@@ -18,12 +18,17 @@ parameters. Everything is keyed by the caller's logical names.
   one schedule and live on another, which is how a new runbook is soaked.
 - **Keys of the three maps are Terraform addresses.** Renaming one moves the
   resource in state; change the Azure-side name with `name` instead.
-- **A shared library is inlined, not imported.** A runbook that shares logic
-  with a workstation script (`Invoke-AuthenticationMethodsDrift` shares its
-  diff with `scripts/Set-AuthenticationMethods.ps1`) names the library file in
-  `library_path`, and the block between its `# INLINE_LIBRARY_BEGIN` and
-  `# INLINE_LIBRARY_END` lines is replaced with that file's content at plan
-  time. See the next section for why.
+- **A shared library is inlined, not imported.** A runbook that shares code
+  with another file names the library in `library_path`, and the block
+  between its `# INLINE_LIBRARY_BEGIN` and `# INLINE_LIBRARY_END` lines is
+  replaced with that file's content at plan time. Two libraries use this
+  today: `AuthenticationMethods.Common.ps1`, the diff
+  `Invoke-AuthenticationMethodsDrift` shares with
+  `scripts/Set-AuthenticationMethods.ps1`, and `Runbook.Common.ps1`, the
+  logging, identity, transport, lookup, and summary plumbing that six
+  runbooks share with each other. A runbook names at most one library. See
+  the next section for why, and
+  [ADR 0013](../../../docs/adr/0013-one-shared-runbook-library-inlined-at-deploy-time.md).
 
 ## Why a library is inlined rather than published as a module asset
 
@@ -32,12 +37,17 @@ runbooks are a module asset and a copy. `azurerm_automation_module` takes a
 packaged module (`.zip` or `.nupkg`) from an https URL, which means a build
 step, a place to host the package, a version to bump, and a second thing to
 adopt when a tenant is onboarded; a plain `.ps1` cannot be a module asset at
-all. A copy in each runbook is what the other two runbooks do for their
-transport and identity helpers, and it is fine when the shared code is stable
-and small. The authentication methods diff is neither: it is the part most
-likely to change (a new method type, a new field) and it must stay identical
-in the pipeline script and the weekly runbook or the two would disagree about
-what drift is.
+all. A copy in each runbook is what the first three runbooks
+(`Invoke-AppCredentialHygiene`, `Invoke-GuestLifecycle`, and
+`Invoke-AuthenticationMethodsDrift`) still do for their transport and identity
+helpers, and it is fine when the shared code is stable and small and there are
+three copies. The authentication methods diff is
+neither: it is the part most likely to change (a new method type, a new
+field) and it must stay identical in the pipeline script and the weekly
+runbook or the two would disagree about what drift is. The plumbing of the
+six newer runbooks is the same case by count: six copies of a retry loop and
+a token cache are six places for one bug to hide, so it lives once in
+`Runbook.Common.ps1`.
 
 So the library is a file in the repository, `automation/lib/*.ps1`, the script
 dot-sources it, and the runbook carries two marker lines with a dot-source of
@@ -91,6 +101,11 @@ module "runbooks" {
       name         = "Invoke-AuthenticationMethodsDrift"
       content_path = "${path.module}/../../automation/runbooks/Invoke-AuthenticationMethodsDrift.ps1"
       library_path = "${path.module}/../../automation/lib/AuthenticationMethods.Common.ps1"
+    }
+    job-failure-watch = {
+      name         = "Watch-AutomationJobFailures"
+      content_path = "${path.module}/../../automation/runbooks/Watch-AutomationJobFailures.ps1"
+      library_path = "${path.module}/../../automation/lib/Runbook.Common.ps1"
     }
   }
 

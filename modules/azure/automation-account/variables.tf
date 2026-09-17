@@ -25,12 +25,60 @@ variable "location" {
 }
 
 variable "identity_name" {
-  description = "Name of the user-assigned managed identity the account runs as. Three to 128 characters of letters, digits, hyphens, and underscores, starting with a letter or digit."
+  description = "Name of the single user-assigned managed identity the account runs as, created under the key \"default\". Null when identities declares tiers instead. Three to 128 characters of letters, digits, hyphens, and underscores, starting with a letter or digit."
   type        = string
+  default     = null
 
   validation {
-    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$", var.identity_name))
+    condition     = var.identity_name == null || can(regex("^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$", var.identity_name))
     error_message = "identity_name must be 3 to 128 characters of letters, digits, hyphens, and underscores, starting with a letter or digit."
+  }
+}
+
+variable "identities" {
+  description = <<-EOT
+    User-assigned managed identities to create and attach to the account,
+    keyed by a privilege tier name (observer, lifecycle, pim, ...). Each entry
+    has one attribute, name, the identity's name in Azure.
+
+    Empty (the default) creates exactly one identity, keyed "default" and
+    named identity_name, which is the shape this module had before tiers.
+    Declaring tiers and identity_name at the same time is refused.
+
+    Every identity here is attached to the account, so any runbook in the
+    account can ask the identity endpoint for a token for any of them. Tiers
+    bound a runbook defect or a bad parameter, not someone who can publish a
+    runbook or start a job; see docs/adr/0016.
+  EOT
+
+  type = map(object({
+    name = string
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for key in keys(var.identities) : can(regex("^[a-z][a-z0-9-]{0,31}$", key))])
+    error_message = "identities keys are tier names: lowercase letters, digits, and hyphens, starting with a letter, 32 characters or fewer."
+  }
+
+  validation {
+    condition     = alltrue([for i in var.identities : can(regex("^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$", i.name))])
+    error_message = "Each identities name must be 3 to 128 characters of letters, digits, hyphens, and underscores, starting with a letter or digit."
+  }
+
+  validation {
+    condition     = length(distinct([for i in var.identities : lower(i.name)])) == length(var.identities)
+    error_message = "Two identities have the same name."
+  }
+
+  validation {
+    condition     = length(var.identities) > 0 || var.identity_name != null
+    error_message = "Set either identities (one entry per privilege tier) or identity_name (one identity, keyed \"default\")."
+  }
+
+  validation {
+    condition     = length(var.identities) == 0 || var.identity_name == null
+    error_message = "identity_name is the single-identity form; with identities declared, name every identity in the map instead."
   }
 }
 

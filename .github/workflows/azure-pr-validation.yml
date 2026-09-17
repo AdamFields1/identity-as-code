@@ -34,6 +34,8 @@ on:
       - "automation/runbooks/**"
       - "automation/lib/**"
       - "policies/entra/authentication-methods/**"
+      - "policies/azure/pim-governance/**"
+      - "policies/entra/pim-governance/**"
       - "scripts/Set-AuthenticationMethods.ps1"
       - ".tflint.hcl"
       - ".github/workflows/azure-pr-validation.yml"
@@ -136,19 +138,24 @@ jobs:
           # A cell is tenants/azure/<tenant>/<stack>. %P prints "corp/azure-rbac-roles".
           all_cells=$(find tenants/azure -mindepth 2 -maxdepth 2 -type d -printf '%P\n' | sort)
 
-          # Runbook bodies, the library they inline, and the desired-state files
-          # are all published by the azure-automation stack, so an edit to any
-          # of them is a shared-code change for planning purposes.
-          if echo "$changed" | grep -Eq '^(modules/(azure|entra)/|stacks/(azure|entra)-|automation/(runbooks|lib)/|policies/entra/authentication-methods/|tenants/azure/root\.hcl|\.github/workflows/azure-pr-validation\.yml)'; then
+          # Runbook bodies, the library they inline, and every desired-state
+          # file (the authentication methods policy and the two PIM baselines)
+          # are published by the azure-automation stack, so an edit to any of
+          # them is a shared-code change for planning purposes.
+          if echo "$changed" | grep -Eq '^(modules/(azure|entra)/|stacks/(azure|entra)-|automation/(runbooks|lib)/|policies/entra/authentication-methods/|policies/azure/pim-governance/|policies/entra/pim-governance/|tenants/azure/root\.hcl|\.github/workflows/azure-pr-validation\.yml)'; then
             selected="$all_cells"
           else
             selected=$(echo "$changed" | grep -E '^tenants/azure/[^/]+/[^/]+/' | cut -d/ -f3-4 | sort -u || true)
           fi
 
           # The authentication methods policy is not a cell (docs/adr/0012); a
-          # change to its desired state, the script, or the shared library gets
-          # a read-only drift check instead of a plan.
-          if echo "$changed" | grep -Eq '^(policies/entra/authentication-methods/|scripts/Set-AuthenticationMethods\.ps1|automation/lib/)'; then
+          # change to its desired state, the script, the library those two
+          # share, or the runbook that runs the same comparison gets a
+          # read-only drift check instead of a plan. The other files under
+          # automation/lib have nothing to do with this policy: an edit to
+          # Runbook.Common.ps1 must not run a check that turns red because the
+          # tenant has drifted somewhere else.
+          if echo "$changed" | grep -Eq '^(policies/entra/authentication-methods/|scripts/Set-AuthenticationMethods\.ps1|automation/lib/AuthenticationMethods\.Common\.ps1|automation/runbooks/Invoke-AuthenticationMethodsDrift\.ps1)'; then
             auth_methods=true
           else
             auth_methods=false

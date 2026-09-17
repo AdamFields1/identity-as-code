@@ -1,0 +1,49 @@
+{
+  "mode": "minimum",
+  "defaults": {
+    "activation_maximum_duration": "PT4H",
+    "require_multifactor_authentication": true,
+    "require_justification": true,
+    "require_ticket_info": false,
+    "require_approval": false
+  },
+  "roles": {},
+  "pairs": {
+    "owner-at-root": {
+      "role_name": "Owner",
+      "scope": { "type": "management_group", "name": "mg-example-root" },
+      "activation": {
+        "maximum_duration": "PT1H",
+        "require_approval": true,
+        "approver_groups": ["PIM Approvers"]
+      }
+    },
+    "contributor-prod": {
+      "role_name": "Contributor",
+      "scope": { "type": "subscription", "name": "sub-example-prod" },
+      "activation": { "require_ticket_info": true }
+    },
+    "contributor-nonprod": {
+      "role_name": "Contributor",
+      "scope": { "type": "subscription", "name": "sub-example-nonprod" },
+      "activation": { "maximum_duration": "PT8H" }
+    },
+    "platform-operator-at-root": {
+      "role_name": "Platform Operator",
+      "scope": { "type": "management_group", "name": "mg-example-root" }
+    },
+    "cost-reviewer-at-root": {
+      "role_name": "Cost Reviewer",
+      "scope": { "type": "management_group", "name": "mg-example-root" },
+      "activation": {
+        "require_multifactor_authentication": true,
+        "require_justification": false
+      }
+    },
+    "reader-at-root": {
+      "role_name": "Reader",
+      "scope": { "type": "management_group", "name": "mg-example-root" }
+    }
+  },
+  "pairs_report_only": false
+}

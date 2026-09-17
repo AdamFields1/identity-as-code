@@ -1,8 +1,7 @@
 <#
 .SYNOPSIS
     Parses every PowerShell file in automation/ and scripts/ with the language
-    parser, then runs the Pester tests in this directory with whichever Pester
-    is installed.
+    parser, then runs the Pester tests in this directory under Pester 3.4 or 4.
 
 .DESCRIPTION
     Two gates, in order:
@@ -11,22 +10,38 @@
          System.Management.Automation.Language.Parser. A parse error fails the
          run before any test executes.
       2. The *.Tests.ps1 files in this directory run under Pester. The tests
-         are written in the Pester 3/4 assertion syntax ("Should Be") because
-         Windows PowerShell 5.1 ships Pester 3.4.0. When only Pester 5 or later
-         is installed the runner still tries, but warns that the assertion
-         syntax may need Pester 4 (Install-Module Pester -RequiredVersion 4.10.1
-         -Scope CurrentUser) or Windows PowerShell.
+         are written in the assertion syntax Pester 3 and 4 share ("Should Be",
+         not "Should -Be"), because Windows PowerShell 5.1 ships Pester 3.4.0
+         and the pull request workflow installs 4.10.1.
+
+    Which Pester is used, first match wins:
+
+      1. -PesterVersion, when given: that exact version, or the run fails
+         saying how to install it. This is what .github/workflows/automation-tests.yml
+         passes, so the two shells in its matrix run the same version.
+      2. A Pester 3 or 4 module already imported in this session: left alone,
+         so a caller who imported a particular build gets it.
+      3. The newest installed version below 5.
+      4. Otherwise the newest installed version, with a warning: Pester 5
+         removed the legacy assertion syntax, so the tests will fail on syntax
+         rather than on behaviour. Install 4.10.1 (see below) or use Windows
+         PowerShell.
 
     Exit code is the number of failed tests, or 1 when parsing fails.
 
 .PARAMETER OutputPath
     Optional NUnit XML results file, for a CI test report.
 
+.PARAMETER PesterVersion
+    Exact Pester version to import, for example 4.10.1. Empty (the default)
+    picks as described above.
+
 .EXAMPLE
     .\Invoke-Tests.ps1
 
 .EXAMPLE
-    .\Invoke-Tests.ps1 -OutputPath .\out\test-results.xml
+    Install-Module Pester -RequiredVersion 4.10.1 -Force -SkipPublisherCheck -Scope CurrentUser
+    .\Invoke-Tests.ps1 -PesterVersion 4.10.1 -OutputPath .\out\test-results.xml
 
 .NOTES
     Windows PowerShell 5.1 and PowerShell 7 compatible.
@@ -35,7 +50,8 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$OutputPath = ''
+    [string]$OutputPath = '',
+    [string]$PesterVersion = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,33 +70,51 @@ foreach ($file in $files) {
     if ($errors -and $errors.Count -gt 0) {
         $parseFailures++
         foreach ($e in $errors) {
-            Write-Host ('PARSE ERROR {0}:{1} {2}' -f $file.FullName, $e.Extent.StartLineNumber, $e.Message)
+            Write-Output ('PARSE ERROR {0}:{1} {2}' -f $file.FullName, $e.Extent.StartLineNumber, $e.Message)
         }
     }
 }
-Write-Host ('Parsed {0} file(s), {1} with errors.' -f $files.Count, $parseFailures)
+Write-Output ('Parsed {0} file(s), {1} with errors.' -f $files.Count, $parseFailures)
 if ($parseFailures -gt 0) { exit 1 }
 
 # ---- Gate 2: Pester ---------------------------------------------------------
 
+$installHint = 'Install-Module Pester -RequiredVersion 4.10.1 -Force -SkipPublisherCheck -Scope CurrentUser'
 $available = @(Get-Module -ListAvailable -Name Pester | Sort-Object -Property Version -Descending)
-if ($available.Count -eq 0) {
-    throw 'Pester is not installed. Windows PowerShell 5.1 ships 3.4.0; otherwise run Install-Module Pester -RequiredVersion 4.10.1 -Scope CurrentUser.'
-}
+$loaded = @(Get-Module -Name Pester)
 
-$legacy = @($available | Where-Object { $_.Version.Major -le 4 } | Select-Object -First 1)
-if ($legacy.Count -gt 0) {
-    Import-Module -Name Pester -RequiredVersion $legacy[0].Version -Force
+if (-not [string]::IsNullOrWhiteSpace($PesterVersion)) {
+    $wanted = @($available | Where-Object { $_.Version.ToString() -eq $PesterVersion })
+    if ($wanted.Count -eq 0) {
+        throw ('Pester {0} is not installed. Run: {1}' -f $PesterVersion, $installHint)
+    }
+    Import-Module -Name Pester -RequiredVersion $wanted[0].Version -Force
+}
+elseif ($loaded.Count -gt 0 -and $loaded[0].Version.Major -le 4) {
+    # Already imported by the caller; use it as it is.
+}
+elseif ($available.Count -eq 0) {
+    throw ('Pester is not installed. Windows PowerShell 5.1 ships 3.4.0; otherwise run: {0}' -f $installHint)
 }
 else {
-    Write-Warning ('Only Pester {0} is installed. These tests use the Pester 3/4 assertion syntax; if they fail on syntax, install Pester 4.10.1 or run under Windows PowerShell 5.1.' -f $available[0].Version)
-    Import-Module -Name Pester -Force
+    $legacy = @($available | Where-Object { $_.Version.Major -le 4 } | Select-Object -First 1)
+    if ($legacy.Count -gt 0) {
+        Import-Module -Name Pester -RequiredVersion $legacy[0].Version -Force
+    }
+    else {
+        Write-Warning ('Only Pester {0} is installed. These tests use the assertion syntax of Pester 3 and 4, which 5 removed; expect syntax failures. Run: {1}' -f $available[0].Version, $installHint)
+        Import-Module -Name Pester -Force
+    }
 }
-$loaded = Get-Module -Name Pester
-Write-Host ('Using Pester {0} on PowerShell {1}.' -f $loaded.Version, $PSVersionTable.PSVersion)
+
+$pester = Get-Module -Name Pester
+if ($null -eq $pester) { throw 'Pester could not be imported.' }
+Write-Output ('Using Pester {0} on PowerShell {1} ({2}).' -f $pester.Version, $PSVersionTable.PSVersion, $PSVersionTable.PSEdition)
 
 $params = @{ PassThru = $true }
-if ($loaded.Version.Major -ge 5) { $params.Path = $here } else { $params.Script = $here }
+# Pester 4 takes the test files in -Script (a path or a hashtable); Pester 5
+# renamed that to -Path and dropped -Script.
+if ($pester.Version.Major -ge 5) { $params.Path = $here } else { $params.Script = $here }
 if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
     $directory = Split-Path -Path $OutputPath -Parent
     if ($directory -and -not (Test-Path -Path $directory)) { New-Item -ItemType Directory -Path $directory | Out-Null }
@@ -90,6 +124,6 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
 
 $result = Invoke-Pester @params
 
-Write-Host ''
-Write-Host ('Result: {0} passed, {1} failed, {2} skipped.' -f $result.PassedCount, $result.FailedCount, $result.SkippedCount)
+Write-Output ''
+Write-Output ('Result: {0} passed, {1} failed, {2} skipped.' -f $result.PassedCount, $result.FailedCount, $result.SkippedCount)
 exit ([int]$result.FailedCount)

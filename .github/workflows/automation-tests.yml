@@ -1,0 +1,92 @@
+# Pester tests for the runbooks, the two libraries, and the scripts.
+#
+# The suite is offline: every HTTP call is mocked (automation/README.md,
+# "Testing locally"), so this job needs no cloud credential, no environment,
+# and no state backend. Its only permission is contents: read.
+#
+# Two shells, because the runbooks have to run on both editions. Azure
+# Automation publishes them as PowerShell72 and a workstation or a Hybrid
+# Runbook Worker may run them under Windows PowerShell 5.1, so the same tests
+# run under powershell (5.1) and pwsh (7) on windows-latest. Pester is pinned
+# to 4.10.1 in both: 5.x would not run the Should Be assertion syntax the
+# tests use, and Windows PowerShell ships 3.4.0, which the tests also pass
+# under but which is not what a reviewer should have to install.
+#
+# Invoke-Tests.ps1 parses every .ps1 under automation/ and scripts/ first and
+# fails the job before a single test runs if one of them does not parse. It
+# exits with the number of failed tests.
+#
+# The trigger covers policies/ and tenants/ as well as the code, because the
+# suite asserts against files in both: PolicyBaselines.Tests.ps1 reads the two
+# PIM baselines under policies/ and the corp cells under tenants/, and several
+# runbook tests compare a runbook's header with the corp automation cell. A
+# pull request that only edits a baseline or a cell has to run the tests that
+# guard it.
+
+name: automation-tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "automation/**"
+      - "scripts/**"
+      - "policies/**"
+      - "tenants/**"
+      - ".github/workflows/automation-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "automation/**"
+      - "scripts/**"
+      - "policies/**"
+      - "tenants/**"
+      - ".github/workflows/automation-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: automation-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pester:
+    name: pester (${{ matrix.shell }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shell: powershell # Windows PowerShell 5.1
+          - shell: pwsh # PowerShell 7
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Pester 4.10.1
+        shell: ${{ matrix.shell }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name Pester -RequiredVersion 4.10.1 -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module -Name Pester -RequiredVersion 4.10.1 -Force
+          Get-Module -Name Pester | Format-Table Name, Version, Path
+
+      - name: Run the suite
+        shell: ${{ matrix.shell }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module -Name Pester -RequiredVersion 4.10.1 -Force
+          ./automation/tests/Invoke-Tests.ps1 -PesterVersion 4.10.1 -OutputPath ./out/test-results-${{ matrix.shell }}.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pester-${{ matrix.shell }}-${{ github.sha }}
+          path: out/test-results-${{ matrix.shell }}.xml
+          retention-days: 7
+          if-no-files-found: warn

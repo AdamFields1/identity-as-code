@@ -1,0 +1,17 @@
+{
+  "mode": "minimum",
+  "defaults": {
+    "maximumActivationDuration": "PT4H",
+    "activationRequirements": ["MultiFactorAuthentication", "Justification"],
+    "requireApproval": false,
+    "approverGroupName": "",
+    "authenticationContextSatisfiesMfa": false
+  },
+  "roles": {},
+  "groups": {
+    "PIM Global Administrators": {
+      "requireApproval": true,
+      "approverGroupName": "SEC IAM Approvers"
+    }
+  }
+}

@@ -26,6 +26,8 @@ flowchart LR
       APE[pim-eligible-assignment]
       AAC[automation-account]
       ARB[automation-runbooks]
+      AWR[workload-role-assignment]
+      ABS[backup-storage]
     end
     subgraph maws["modules/aws"]
       WPS[permission-set]
@@ -50,11 +52,20 @@ flowchart LR
     RB2[Invoke-GuestLifecycle]
     RB3[Invoke-AuthenticationMethodsDrift]
     LIB[automation/lib/AuthenticationMethods.Common]
+    RB4[Backup-AutomationRunbooks]
+    RB5[Invoke-PimEligibilityRenewal]
+    RB6[Disable-UnauthorizedSubscriptions]
+    RB7[Invoke-AzurePimPolicyGovernance]
+    RB8[Invoke-EntraPimPolicyDrift]
+    RB9[Watch-AutomationJobFailures]
+    RCL[automation/lib/Runbook.Common]
   end
 
-  subgraph desired["policies (desired-state JSON, no Terraform resource)"]
+  subgraph desired["policies (desired-state JSON, no Terraform resource, or no safe job parameter)"]
     AMP[entra/authentication-methods]
     AMS[scripts/Set-AuthenticationMethods]
+    PBA[azure/pim-governance/corp-baseline.json]
+    PBE[entra/pim-governance/corp-baseline.json]
   end
 
   subgraph tokta["tenants/okta (values only)"]
@@ -100,13 +111,24 @@ flowchart LR
   AAC --> SAA
   ARB --> SAA
   EGG --> SAA
+  AWR --> SAA
+  ABS --> SAA
   RB1 -.file.-> SAA
   RB2 -.file.-> SAA
   RB3 -.file.-> SAA
   LIB -.inlined into RB3.-> SAA
+  RB4 -.file.-> SAA
+  RB5 -.file.-> SAA
+  RB6 -.file.-> SAA
+  RB7 -.file.-> SAA
+  RB8 -.file.-> SAA
+  RB9 -.file.-> SAA
+  RCL -.inlined into RB4 to RB9.-> SAA
   LIB -.dot-sourced.-> AMS
   AMP -.variables.-> SAA
   AMP -.folder.-> AMS
+  PBA -.variable PimPolicy_AzureBaseline.-> SAA
+  PBE -.variable PimPolicy_EntraBaseline.-> SAA
   WPS --> SWI
   WAA --> SWI
 
@@ -152,10 +174,12 @@ Dependencies only point one way. Modules know nothing about stacks. Stacks know
 nothing about tenants. Tenants know nothing about pipelines. A change at any layer
 is reviewed in the layer where it happens.
 
-Three things are deliberately absent from the diagram. `azure-rbac-roles` has no
-edge to `azure-pim-governance`: the governance stack refers to custom roles by
-display name and resolves them at plan time, so the coupling is a name, not an
-output (ADR 0005). `subsidiary/*` has no `azure-rbac-roles`,
+Four things are deliberately absent from the diagram. `azure-rbac-roles` has no
+edge to `azure-pim-governance` or `azure-automation`: both refer to custom roles
+by display name and resolve them at plan time, so the coupling is a name, not an
+output (ADR 0005). Nor do the PIM stacks have an edge to the PIM runbooks: the
+baseline files under `policies/` mirror their declared entries, and a pull
+request that changes one changes the other (ADR 0015). `subsidiary/*` has no `azure-rbac-roles`,
 `entra-app-registrations`, `entra-aws-federation`, or `azure-automation` cell,
 because the subsidiary assigns built-in roles only, registers no applications,
 reaches AWS through corp groups, and has not had the runbooks rolled out. And
@@ -167,19 +191,29 @@ resolved on each side at plan time (ADR 0008), not a cross-cloud dependency.
 The runbooks are a fourth kind of input. They are not modules (a stack does
 not call them) and not tenant values (a cell names a file, never a body); the
 `azure-automation` stack reads each file and publishes it, so a runbook edit
-is a plan diff like any other. One runbook is assembled rather than read: the
-authentication methods drift runbook names a library under `automation/lib`
-and the runbooks module inlines it between two marker lines at plan time, so
-the diff logic exists once and is also dot-sourced by the workstation script.
+is a plan diff like any other. Seven runbooks are assembled rather than read:
+each names a library under `automation/lib` and the runbooks module inlines it
+between two marker lines at plan time. The authentication methods drift
+runbook names `AuthenticationMethods.Common`, so the diff logic exists once
+and is also dot-sourced by the workstation script; the six newer runbooks
+name `Runbook.Common`, so their logging, identity, transport, lookups,
+breaker, and summary exist once and a change to them is a plan diff on all
+six (ADR 0013).
 
-The desired-state folder `policies/entra/authentication-methods` is a fifth
-kind, for the one object that has no Terraform resource. The stack publishes
-each file as an Automation variable (so the runbook reads what the repository
+The desired-state files under `policies/` are a fifth kind: objects no
+Terraform resource holds, and configuration a job schedule cannot carry
+safely. `entra/authentication-methods` is the first. The stack publishes each
+file as an Automation variable (so the runbook reads what the repository
 says), and the pipelines run `scripts/Set-AuthenticationMethods.ps1` against
 the folder directly: read-only with `-FailOnDrift` on a pull request, and
 `-DryRun:$false` in the release train after the corp governance cell (ADR
-0012). Nothing under `policies/` is state; the live tenant is compared with
-the files every time.
+0012). The two PIM baselines, `azure/pim-governance/corp-baseline.json` and
+`entra/pim-governance/corp-baseline.json`, travel the same way, because a job
+schedule binds only `[bool]`, `[int]`, and `[string]` reliably and the
+Automation service may parse JSON-looking parameter text before it binds it:
+the schedule carries the variable's name and the runbook reads the variable
+(ADR 0015). Nothing under `policies/` is state; the live tenant is compared
+with the files every time.
 
 ## Inside the stack
 
@@ -248,50 +282,178 @@ cell, so no cell ever contains a GUID or a management group ID.
 flowchart TB
   subgraph auto["stacks/azure-automation (one cell per tenant)"]
     RG["data azurerm_resource_group (by name)"]
-    UAI["module automation_account\nazurerm_user_assigned_identity"]
-    AA["module automation_account\nazurerm_automation_account\n+ variables"]
+    UAI["module automation_account\nazurerm_user_assigned_identity\none per privilege tier (identities)"]
+    AA["module automation_account\nazurerm_automation_account\nall tier identities attached\n+ variables"]
     FILES["automation/runbooks/*.ps1\n+ automation/lib inlined at markers\nsha256()"]
-    DS["policies/entra/authentication-methods/*.json\nfile() into AuthMethods_* string variables"]
+    DS["policies/**/*.json\nfile() into AuthMethods_* and\nPimPolicy_* string variables"]
     RBK["module runbooks\nazurerm_automation_runbook\nazurerm_automation_schedule\nazurerm_automation_job_schedule"]
     GSP["data azuread_service_principal\n(Microsoft Graph, app_role_ids by name)"]
-    GRANT["module graph_grants\nazuread_app_role_assignment"]
+    GRANT["module graph_grants[tier]\nazuread_app_role_assignment"]
+    BST["module backup_storage (optional)\nazurerm_storage_account, no shared key\nazurerm_storage_container, private\nStorage Blob Data Contributor on the container"]
+    SCN["data azurerm_management_group,\nazurerm_subscriptions (by display name)\nazurerm_role_definition (by name, at scope)"]
+    RAS["module arm_role_assignments[tier]\nazurerm_role_assignment\n+ ABAC condition, tokens resolved"]
     RG --> UAI
     RG --> AA
     DS -->|variables| AA
     UAI -->|identity_ids| AA
     AA -->|account name, location| RBK
-    UAI -->|client_id into every job schedule as clientid| RBK
+    UAI -->|the client_id of each runbook's own tier, as clientid| RBK
     FILES -->|content| RBK
-    UAI -->|principal_id| GRANT
+    UAI -->|principal_id per tier| GRANT
     GSP -->|role IDs| GRANT
+    UAI -->|principal_id of the tier that writes backups| BST
+    BST -->|account and container names via stack_parameters| RBK
+    AA -->|account name, resource group, subscription via stack_parameters| RBK
+    UAI -->|its own tier's principal_id via stack_parameters| RBK
+    SCN -->|scope IDs, role IDs, Owner GUID| RAS
+    UAI -->|principal_id per tier, also the principal_id token| RAS
+    AA -->|account ID as a scope| RAS
   end
 
   subgraph run["at run time (Azure Automation sandbox)"]
-    JOB["job: runbook + schedule parameters\n(dryrun, environment, sendermailbox, clientid, thresholds, caps)"]
-    IDE["Automation identity endpoint\ntoken for Graph with client_id"]
+    JOB["job: runbook + schedule parameters\n(dryrun, environment, sendermailbox, clientid, thresholds, caps, baselines)"]
+    IDE["Automation identity endpoint\ntokens for Graph, ARM, Storage with client_id"]
     GRAPH["Microsoft Graph\n(global or US Government)"]
-    JOB --> IDE --> GRAPH
+    ARM["Azure Resource Manager\nPIM, subscriptions, role assignments,\nAutomation jobs and runbooks"]
+    BLOB["Blob storage\nbackup container"]
+    JOB --> IDE
+    IDE --> GRAPH
+    IDE --> ARM
+    IDE --> BLOB
   end
 
   RBK -.schedule fires.-> JOB
   GRANT -.what the token may do.-> GRAPH
+  RAS -.what the token may do.-> ARM
+  BST -.what the token may do.-> BLOB
 ```
 
-The account and its identity come first because both leaves key off them: the
-runbooks module needs the account name and location, and the Graph grants need
-the identity's principal ID. The identity's client ID is the one value a cell
-cannot know and every runbook needs, so the stack injects it into every job
-schedule's parameters along with the cloud, the sender mailbox, and the dry-run
-flag; a cell states those once and cannot give two runbooks different answers.
-The runbook body is the file in the repository, hashed into a tag so the plan
-and the portal both show the deployed revision. What the identity may do is a
-list of Graph permission names in the cell (ADR 0010); where a guest is on the
-lifecycle ladder is a group membership the runbook resolves by display name
-(ADR 0011). The authentication methods desired state reaches the drift
-runbook the same way the client ID does, through the account: one string
-variable per JSON file, published from the repository, so the Sunday
-comparison is against the merged files and never against a portal-edited
-copy (ADR 0012).
+The account and its identities come first because both leaves key off them:
+the runbooks module needs the account name and location, and the Graph grants
+need each identity's principal ID. There is one user-assigned identity per
+privilege tier, all attached to the one account, and every runbook names the
+tier it runs as; the stack passes that tier's client ID as the runbook's
+`clientid`, along with the cloud, the sender mailbox, and the dry-run flag,
+which a cell states once and cannot give two runbooks different answers to. A
+tier holds only what its own runbooks use, so a defect in the backup runbook
+no longer runs as an identity that can rewrite Global Administrator's PIM
+policy; what it does not do is stop anyone who can publish a runbook in the
+account from asking for another tier's token, and ADR 0016 says when that
+calls for separate accounts. The runbook body is the file in the repository,
+hashed into a tag so the plan and the portal both show the deployed revision.
+Where a guest is on the lifecycle ladder is a group membership the runbook
+resolves by display name (ADR 0011). The authentication methods desired state
+and the two PIM baselines reach their runbooks the same way the client ID
+does, through the account: one string variable per JSON file, published from
+the repository, so a comparison is against the merged files and never against
+a portal-edited copy, and so no runbook has to take JSON in a job schedule
+parameter (ADR 0012, ADR 0015).
+
+Three more values follow the client ID's pattern. A runbook entry can ask for
+the account's own name, resource group, and subscription, its own identity's
+principal ID, and the backup storage names through `stack_parameters`, by
+naming the value, so the job watcher and the backup watch and copy the account
+they run in and the subscription guard can check its own token against the
+identity Terraform created, all without a cell typing an ID. Asking for a
+backup value is also what gives that tier the container role, so the writer is
+derived from the runbook that writes. What a tier may do in Azure Resource
+Manager is its own `arm_role_assignments`: scope names and role names,
+resolved at plan time like every other Azure stack, and for the subscription
+guard an ABAC delegation condition whose `<principal_id>` and
+`<role_id:Owner>` tokens the module replaces with that identity's object ID
+and the Owner role's GUID (ADR 0014). The backup storage is optional and
+keyless: shared key access is off, the container is private, versioning and
+soft delete are on with a lifecycle rule behind them, and the data role is
+scoped to the container alone. The job watcher's state variable is the one
+account object no module declares, because the watcher owns it.
+
+## Two writers for PIM settings
+
+```mermaid
+flowchart LR
+  subgraph declared["declared (Terraform, on merge)"]
+    APG["corp/azure-pim-governance\ndefaults + policies"]
+    EPG["corp/entra-pim-governance\nrole_policies"]
+  end
+
+  subgraph mirror["baseline files, published as Automation variables"]
+    AB["policies/azure/pim-governance/corp-baseline.json\ndefaults + pairs (mirror of the Azure cell)\nvariable PimPolicy_AzureBaseline"]
+    EB["policies/entra/pim-governance/corp-baseline.json\ndefaults + groups (mirror of the Entra cell)\nvariable PimPolicy_EntraBaseline"]
+    RP["corp/azure-automation values:\nincludegroupnames, principalgroupnamepattern\n(excludes Terraform-dated groups)"]
+  end
+
+  subgraph swept["swept (runbooks, nightly, mode minimum)"]
+    AZG["Invoke-AzurePimPolicyGovernance\nevery eligible Azure pair"]
+    ENG["Invoke-EntraPimPolicyDrift\nevery directory role + PIM groups"]
+    REN["Invoke-PimEligibilityRenewal\ngroup eligibilities about to lapse"]
+  end
+
+  APG -.same values, same pull request.-> AB
+  EPG -.same values, same pull request.-> EB
+  APG -.dated groups.-> RP
+  AB --> AZG
+  EB --> ENG
+  RP --> REN
+  AZG -->|tighten only| PIMA["Azure PIM policies"]
+  APG -->|declared pairs| PIMA
+  ENG -->|tighten only| PIME["Entra PIM policies"]
+  EPG -->|declared groups| PIME
+  REN -->|extend groups only| ELIG["PIM eligibilities"]
+```
+
+Terraform owns what a cell declares; the runbooks sweep everything else every
+night. The built-in baselines are the stacks' defaults, the baseline file
+mirrors every declared entry, and both sweeps treat the baseline as a floor,
+so on a declared pair the two writers agree by construction and a plan after
+a sweep shows nothing the sweep changed. A stale mirror shows up as a nightly
+digest and a plan diff, not as silence. The renewal leaves the dates
+Terraform declared to Terraform (ADR 0015).
+
+## Just-in-time elevation for the subscription guard
+
+```mermaid
+sequenceDiagram
+  participant Job as Disable-UnauthorizedSubscriptions
+  participant ARM as Azure Resource Manager
+  participant Sub as Candidate subscription
+
+  Note over Job,ARM: standing, on the subscription-guard tier identity: Reader, and Role Based Access<br/>Control Administrator at the sandbox management group, conditioned:<br/>may assign only Owner, only to itself
+  Job->>ARM: read subscriptions, owners, and Owner eligibilities, and decide each one
+  Job->>ARM: remove leftover temporary Owner assignments of its own
+  Job->>Job: circuit breaker on the subscriptions that meet the cancel rule (default 3)
+  loop each candidate, only when DryRun is false and AllowCancel is true
+    Job->>ARM: PUT roleAssignment Owner for itself at the subscription
+    ARM-->>Job: allowed by the condition
+    Job->>Job: wait for propagation
+    Job->>Sub: POST Microsoft.Subscription/cancel (retried while 403)
+    Job->>ARM: DELETE the Owner assignment (finally)
+    Job->>ARM: GET it until 404
+  end
+  Job-->>Job: summary, then throw if a removal is unconfirmed
+```
+
+The order matters and matches the code: every subscription is decided first,
+because the leftover sweep asks only the scopes that pass did not already
+read; then the leftovers of an interrupted job are removed, which is the one
+write allowed before the breaker because it only takes this identity's own
+access away; then the breaker counts the subscriptions that meet the cancel
+rule.
+
+The condition limits what the identity may assign (Owner) and to whom
+(itself), not where under that management group, so the identity is
+Owner-equivalent over the management group it is assigned at. The assignment
+goes at the narrowest management group that holds only the targeted
+subscriptions, and never above production. What the condition buys is that a
+decision bug can at worst cancel a subscription there, and cannot grant a
+person or another workload anything; it is not a boundary against someone who
+can publish a runbook in the account, who can have that identity assign itself
+Owner at the management group (ADR 0014, ADR 0016).
+
+Nothing is canceled until two switches are turned, in this order: `dry_run =
+false`, which makes a report-only live run that mails the digest, and then
+`allowcancel = "true"`, after the Cancel decision is signed off and a sandbox
+round trip has proved the offer can be canceled and reactivated. With
+`AllowCancel` false no Owner assignment is created at all.
 
 ## Across the two clouds: Entra to Identity Center
 
@@ -434,24 +596,49 @@ Two properties matter here:
 `azure-release` has the same shape with corp in the dev position and subsidiary in
 the prod position, and one extra rule: the corp roles cell is applied before the
 corp governance cell is planned, because the governance cell resolves custom role
-names at plan time. The corp automation cell is planned and applied after the
-governance cell, not because anything is resolved from it but so that corp is
-completely applied before the gate opens; the gate needs both applies. The
-subsidiary plan is still taken at merge time, in parallel, and applied unchanged
-after the `subsidiary` environment gate. Concurrency groups are per cell
-(`azure-cell-corp-azure-pim-governance`), not per tenant, because two cells of
-one tenant have separate state files and can safely run side by side. A change
-under `automation/runbooks`, `automation/lib`, or
-`policies/entra/authentication-methods` triggers the train like a module
-change, because the runbook body, the inlined library, and the desired-state
-variables are what the automation cell publishes. The train has one job that
-is not a Terraform apply: `apply-corp-auth-methods` runs
+names at plan time. The corp automation cell resolves custom roles the
+same way, for its tier identities' role assignments, and is planned and applied
+after the governance cell, which also puts it after the roles cell and makes
+corp completely applied before the gate opens; the gate needs both applies.
+
+That ordering has a cost on the pull request that introduces a role. A custom
+role is resolved by name at plan time, and a role that does not exist yet
+cannot be resolved, so a pull request that adds a role definition **and** its
+first use plans red in the consuming cell ("Role definition ... was not
+found") until the roles cell has been applied on merge. The plan is correct
+and the release order fixes it, but a red plan that has to be explained in the
+pull request is not a good review signal. The practice is to land role
+definitions in their own pull request first, let the release train apply the
+roles cell, and put the assignment in the next one; where that is not
+practical, say in the description which plan is expected to fail and why.
+
+The subsidiary plan is still taken at merge time, in parallel, and applied
+unchanged after the `subsidiary` environment gate. Concurrency groups are per
+cell (`azure-cell-corp-azure-pim-governance`), not per tenant, because two
+cells of one tenant have separate state files and can safely run side by side.
+A change under `automation/runbooks`, `automation/lib`, or `policies/` (the
+authentication methods folder and the two PIM baselines) triggers the train
+like a module change, because the runbook body, the inlined library, and the
+desired-state variables are what the automation cell publishes. The train has
+one job that is not a Terraform apply: `apply-corp-auth-methods` runs
 `scripts/Set-AuthenticationMethods.ps1 -DryRun:$false` with a Graph token from
 the same OIDC login, after `apply-corp-pim` (the policy names a group that
 cell creates) and before the subsidiary gate. The pull request workflow runs
-the same script read-only with `-FailOnDrift` when the folder, the script, or
-the library changes, so the reviewer sees the field-level report before
-anything is patched (ADR 0012).
+the same script read-only with `-FailOnDrift` when that folder, the script,
+`automation/lib/AuthenticationMethods.Common.ps1`, or the drift runbook
+changes, so the reviewer sees the field-level report before anything is
+patched, and an edit to the other library does not drag an unrelated tenant
+check into the pull request (ADR 0012).
+
+A third Azure workflow is not a release at all: `automation-tests` runs the
+Pester suite on `windows-latest` under Windows PowerShell 5.1 and PowerShell 7
+with Pester 4.10.1 for every pull request and push that touches `automation/`,
+`scripts/`, `policies/`, or `tenants/`. The last two are in the trigger because
+the suite asserts against them as well as against the code: the baseline tests
+read `policies/azure/pim-governance` and `policies/entra/pim-governance` and the
+corp cells, so a change to a baseline or a cell alone still runs the checks that
+guard it. It needs no credential and holds `contents: read` only, because
+every HTTP call in those tests is mocked.
 
 `aws-release` has the same shape with commercial in the dev position and GovCloud
 in the prod position. Each job names its GitHub environment, and the environment
@@ -471,7 +658,9 @@ that cell is applied from a workstation (ADR 0008).
 | Talk to Azure Resource Manager and Microsoft Graph | Same federated identity; `ARM_USE_OIDC=true` lets the providers do the token exchange themselves | About an hour |
 | Read/write state in S3 and talk to Identity Center, per partition | GitHub OIDC -> `aws-actions/configure-aws-credentials` -> role from the partition's environment variables (`AWS_PLAN_ROLE_ARN`, `AWS_APPLY_ROLE_ARN`) | Minutes |
 | Provision users and groups into Identity Center | SCIM endpoint and token issued by the AWS console, held as a GitHub environment secret, passed as the sensitive `TF_VAR_scim_credentials`; stored by the provider in state and in saved plans, rotated from the AWS console | Until rotated |
-| Run scheduled identity hygiene against Graph (outside CI) | User-assigned managed identity on the Automation account, created by Terraform; Graph app roles granted by Terraform; each job asks the Automation identity endpoint for a token with the identity's `client_id` | About an hour, per job |
+| Run scheduled identity hygiene against Graph (outside CI) | One user-assigned managed identity per privilege tier on the Automation account, created by Terraform; each tier's Graph app roles granted by Terraform; each job asks the Automation identity endpoint for a token with its own tier's `client_id` (ADR 0016) | About an hour, per job |
+| Run scheduled governance against Azure Resource Manager and Storage (outside CI) | The `observer` and `pim` tier identities; standing role assignments by scope and role name inside each tier, the container role from `backup_storage` for the tier that writes backups; tokens for ARM and Storage from the same endpoint | About an hour, per job |
+| Cancel an unauthorised subscription (outside CI) | The `subscription-guard` tier identity, which no other runbook uses; Role Based Access Control Administrator under a delegation condition lets it assign Owner to itself only; the Owner assignment is created per subscription and removed in the same run | Minutes, per subscription |
 | Compare and patch the authentication methods policy (in CI) | Same `azure/login@v2` OIDC identity as the Terraform jobs; `az account get-access-token --resource-type ms-graph` inside the step, masked, passed as `-AccessToken`, never written to a file or an output | Job |
 | Comment on PR | Workflow `GITHUB_TOKEN` with `pull-requests: write` | Job |
 

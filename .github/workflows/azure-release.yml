@@ -17,9 +17,14 @@
 # the roles cell must be applied before the governance cell can even plan.
 # That is the ordering cost of keeping definitions and assignments in separate
 # cells (docs/adr/0005), paid here rather than in a tenant file. The
-# automation cell has no plan-time dependency on the others; it follows the
-# governance cell only so that corp is completely applied before the
-# subsidiary gate opens. The authentication methods policy is not a Terraform
+# automation cell resolves custom roles from the roles cell by name for its
+# identities' role assignments (docs/adr/0014 and 0016), which the order below
+# already satisfies; it follows the governance cell so that corp is completely
+# applied before the subsidiary gate opens. A pull request that adds a custom
+# role and its first use in the same change plans red in the consuming cell
+# until this train has applied the roles cell, which is why role definitions
+# land in their own pull request first (README.md, "Verification status").
+# The authentication methods policy is not a Terraform
 # cell at all (docs/adr/0012): apply-corp-auth-methods runs the desired-state
 # script after apply-corp-pim, because the policy names groups that cell
 # creates, and the gate waits for it like any other corp apply.
@@ -60,6 +65,8 @@ on:
       - "automation/runbooks/**"
       - "automation/lib/**"
       - "policies/entra/authentication-methods/**"
+      - "policies/azure/pim-governance/**"
+      - "policies/entra/pim-governance/**"
       - "scripts/Set-AuthenticationMethods.ps1"
       - ".github/workflows/azure-release.yml"
   workflow_dispatch:

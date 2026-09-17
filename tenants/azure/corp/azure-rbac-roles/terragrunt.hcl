@@ -95,5 +95,77 @@ inputs = {
         "Microsoft.Advisor/recommendations/read",
       ]
     }
+
+    # -----------------------------------------------------------------------
+    # Roles for the runbook identities in ../azure-automation, assigned there
+    # by name inside the tier that uses them. No built-in role is this narrow:
+    # the PIM writes are otherwise only in User Access Administrator and
+    # Owner, and a variable write only in Automation Contributor.
+    # docs/adr/0014 and docs/adr/0016.
+    #
+    # Two PIM roles, because the two writes are not equally dangerous.
+    # "PIM Policy Operator" can change how a role is activated; it cannot
+    # hand anyone a role. "PIM Policy and Eligibility Operator" adds
+    # roleEligibilityScheduleRequests/write, which creates an eligibility as
+    # readily as it extends one, so a holder can make any principal eligible
+    # for any role at the scope, Owner included. The corp automation cell
+    # assigns the first to its pim tier and the second to nobody: it is
+    # defined here for the day Invoke-PimEligibilityRenewal is given the
+    # Azure plane (includeazureresources = "true"), which is the change that
+    # makes that tier Owner-equivalent over the scopes it names.
+    # -----------------------------------------------------------------------
+    pim-policy-operator = {
+      name        = "PIM Policy Operator"
+      description = "Automation only. Read and update Azure PIM role management policies (activation duration, MFA, justification, ticket, approval). Cannot create role assignments, eligibilities, or role definitions."
+
+      assignable_scope = {
+        type = "management_group"
+        name = "mg-example-root"
+      }
+
+      actions = [
+        "Microsoft.Authorization/roleManagementPolicies/read",
+        "Microsoft.Authorization/roleManagementPolicies/write",
+        "Microsoft.Authorization/roleManagementPolicies/approvalRule/action",
+        "Microsoft.Authorization/roleManagementPolicyAssignments/read",
+        "Microsoft.Authorization/roleEligibilityScheduleInstances/read",
+      ]
+    }
+
+    pim-policy-and-eligibility-operator = {
+      name        = "PIM Policy and Eligibility Operator"
+      description = "Automation only. Update Azure PIM role management policies and submit role eligibility schedule requests. A request can create an eligibility as well as extend one, so treat a holder as privileged at the scope. Cannot create active role assignments or role definitions."
+
+      assignable_scope = {
+        type = "management_group"
+        name = "mg-example-root"
+      }
+
+      actions = [
+        "Microsoft.Authorization/roleManagementPolicies/read",
+        "Microsoft.Authorization/roleManagementPolicies/write",
+        "Microsoft.Authorization/roleManagementPolicies/approvalRule/action",
+        "Microsoft.Authorization/roleManagementPolicyAssignments/read",
+        "Microsoft.Authorization/roleEligibilitySchedules/read",
+        "Microsoft.Authorization/roleEligibilityScheduleInstances/read",
+        "Microsoft.Authorization/roleEligibilityScheduleRequests/read",
+        "Microsoft.Authorization/roleEligibilityScheduleRequests/write",
+      ]
+    }
+
+    automation-variable-writer = {
+      name        = "Automation Variable Writer"
+      description = "Automation only. Read and write Azure Automation variable assets, for a runbook that keeps its own state in one. No job, runbook, schedule, or credential access."
+
+      assignable_scope = {
+        type = "management_group"
+        name = "mg-example-root"
+      }
+
+      actions = [
+        "Microsoft.Automation/automationAccounts/variables/read",
+        "Microsoft.Automation/automationAccounts/variables/write",
+      ]
+    }
   }
 }

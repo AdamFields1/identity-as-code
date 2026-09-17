@@ -3,6 +3,22 @@
 Status: accepted
 Date: 2026-09-16
 
+> Note, 2026-09-17: two decisions below have since been refined, and this
+> record keeps its original wording.
+>
+> - **`DryRun` is `[bool]$DryRun = $true`, not `[switch]`.** A job schedule
+>   passes every value as a string, and a string binds to a boolean but not to
+>   a switch, so every runbook declares a `[bool]`, and schedule-bound
+>   parameters are `[bool]`, `[int]`, or `[string]` only. See
+>   [ADR 0013](0013-one-shared-runbook-library-inlined-at-deploy-time.md), "the
+>   host runbook has a contract too", and `automation/README.md`.
+> - **One identity per Automation account became one identity per privilege
+>   tier.** The consequence below ("more permission than any one runbook
+>   needs") is what
+>   [ADR 0016](0016-one-identity-per-privilege-tier-in-one-automation-account.md)
+>   acts on. Everything else here (managed identity only, no secret, dry by
+>   default, a cap per destructive action) stands unchanged.
+
 ## Context
 
 Some identity work cannot be a Terraform resource because the decision depends

@@ -28,9 +28,10 @@
 # Shared library inlining. Azure Automation runs one file, and a plain .ps1
 # cannot be a module asset (azurerm_automation_module takes a packaged
 # module from a URL, which is a second artifact to build, host, and version).
-# A runbook that shares logic with a workstation script therefore carries two
-# marker lines, and when library_path is set the block between them is
-# replaced with the library file's content at plan time. The runbook keeps a
+# A runbook that shares code with a workstation script or with other runbooks
+# (automation/lib, docs/adr/0013) therefore carries two marker lines, and
+# when library_path is set the block between them is replaced with the
+# library file's content at plan time. The runbook keeps a
 # dot-source of the same file inside the block for workstation runs and
 # tests, so both paths execute identical code. Plain split and join are used
 # rather than a regex replace because a replacement string containing "$"
