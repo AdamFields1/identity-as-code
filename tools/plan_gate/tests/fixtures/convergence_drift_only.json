@@ -1,0 +1,192 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
+  "planned_values": {
+    "root_module": {}
+  },
+  "resource_changes": [
+    {
+      "address": "module.pim_role_policy.azurerm_role_management_policy.this[\"sub-example-prod|Owner\"]",
+      "module_address": "module.pim_role_policy",
+      "mode": "managed",
+      "type": "azurerm_role_management_policy",
+      "name": "this",
+      "index": "sub-example-prod|Owner",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "activation_rules": [
+            {
+              "approval_stage": [],
+              "maximum_duration": "PT8H",
+              "require_approval": false,
+              "require_justification": true,
+              "require_multifactor_authentication": true,
+              "require_ticket_info": false
+            }
+          ],
+          "active_assignment_rules": [
+            {
+              "expiration_required": true,
+              "expire_after": "P90D",
+              "require_justification": true,
+              "require_multifactor_authentication": true,
+              "require_ticket_info": false
+            }
+          ],
+          "eligible_assignment_rules": [
+            {
+              "expiration_required": true,
+              "expire_after": "P365D"
+            }
+          ],
+          "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635",
+          "scope": "/subscriptions/11111111-1111-1111-1111-111111111111"
+        },
+        "after": {
+          "activation_rules": [
+            {
+              "approval_stage": [],
+              "maximum_duration": "PT8H",
+              "require_approval": false,
+              "require_justification": true,
+              "require_multifactor_authentication": true,
+              "require_ticket_info": false
+            }
+          ],
+          "active_assignment_rules": [
+            {
+              "expiration_required": true,
+              "expire_after": "P90D",
+              "require_justification": true,
+              "require_multifactor_authentication": true,
+              "require_ticket_info": false
+            }
+          ],
+          "eligible_assignment_rules": [
+            {
+              "expiration_required": true,
+              "expire_after": "P365D"
+            }
+          ],
+          "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635",
+          "scope": "/subscriptions/11111111-1111-1111-1111-111111111111"
+        },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "module.pim_eligible_assignment.azurerm_pim_eligible_role_assignment.this[\"grp-pim-owners|Owner|sub-example-prod\"]",
+      "module_address": "module.pim_eligible_assignment",
+      "mode": "managed",
+      "type": "azurerm_pim_eligible_role_assignment",
+      "name": "this",
+      "index": "grp-pim-owners|Owner|sub-example-prod",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "justification": "Owner eligibility for grp-pim-owners",
+          "principal_id": "55555555-5555-5555-5555-555555555555",
+          "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635",
+          "schedule": [
+            {
+              "expiration": [
+                {
+                  "duration_days": 365,
+                  "duration_hours": 0,
+                  "end_date_time": null
+                }
+              ],
+              "start_date_time": "2026-09-01T00:00:00Z"
+            }
+          ],
+          "scope": "/subscriptions/11111111-1111-1111-1111-111111111111",
+          "ticket": []
+        },
+        "after": {
+          "justification": "Owner eligibility for grp-pim-owners",
+          "principal_id": "55555555-5555-5555-5555-555555555555",
+          "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635",
+          "schedule": [
+            {
+              "expiration": [
+                {
+                  "duration_days": 365,
+                  "duration_hours": 0,
+                  "end_date_time": null
+                }
+              ],
+              "start_date_time": "2026-09-01T00:00:00Z"
+            }
+          ],
+          "scope": "/subscriptions/11111111-1111-1111-1111-111111111111",
+          "ticket": []
+        },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    }
+  ],
+  "resource_drift": [
+    {
+      "address": "module.pim_eligible_assignment.azurerm_pim_eligible_role_assignment.this[\"grp-pim-owners|Owner|sub-example-prod\"]",
+      "module_address": "module.pim_eligible_assignment",
+      "mode": "managed",
+      "type": "azurerm_pim_eligible_role_assignment",
+      "name": "this",
+      "index": "grp-pim-owners|Owner|sub-example-prod",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "justification": "Owner eligibility for grp-pim-owners",
+          "principal_id": "55555555-5555-5555-5555-555555555555",
+          "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635",
+          "schedule": [
+            {
+              "expiration": [
+                {
+                  "duration_days": 365,
+                  "duration_hours": 0,
+                  "end_date_time": null
+                }
+              ],
+              "start_date_time": "2026-01-01T00:00:00Z"
+            }
+          ],
+          "scope": "/subscriptions/11111111-1111-1111-1111-111111111111",
+          "ticket": []
+        },
+        "after": {
+          "justification": "Owner eligibility for grp-pim-owners",
+          "principal_id": "55555555-5555-5555-5555-555555555555",
+          "role_definition_id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635",
+          "schedule": [
+            {
+              "expiration": [
+                {
+                  "duration_days": 365,
+                  "duration_hours": 0,
+                  "end_date_time": null
+                }
+              ],
+              "start_date_time": "2026-09-01T00:00:00Z"
+            }
+          ],
+          "scope": "/subscriptions/11111111-1111-1111-1111-111111111111",
+          "ticket": []
+        },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    }
+  ],
+  "errored": false,
+  "timestamp": "2026-09-19T12:00:00Z"
+}

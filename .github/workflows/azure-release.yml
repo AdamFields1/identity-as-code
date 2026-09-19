@@ -726,15 +726,14 @@ jobs:
           terragrunt show -no-color "$PLAN_DIR/subsidiary-azure-pim-governance.tfplan" > "$PLAN_DIR/subsidiary-azure-pim-governance.txt"
           terragrunt show -json "$PLAN_DIR/subsidiary-azure-pim-governance.tfplan" > "$PLAN_DIR/subsidiary-azure-pim-governance.json"
       - name: Plan summary
+        # tools/plan_gate report: the counts, with the replace, import, and
+        # drift columns the soak checklist asks about (docs/adr/0018).
         run: |
           set -euo pipefail
-          json="$PLAN_DIR/subsidiary-azure-pim-governance.json"
-          add=$(jq '[.resource_changes[]? | select(.change.actions | index("create"))] | length' "$json")
-          change=$(jq '[.resource_changes[]? | select(.change.actions | index("update"))] | length' "$json")
-          destroy=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' "$json")
+          python3 tools/plan_gate/plan_gate.py report "$PLAN_DIR/subsidiary-azure-pim-governance.json" \
+            --github-summary --title "Subsidiary plan taken at merge (${{ github.sha }})" \
+            --json > "$PLAN_DIR/subsidiary-azure-pim-governance.gate.json"
           {
-            echo "### Subsidiary plan taken at merge (${{ github.sha }})"
-            echo "Add: $add, Change: $change, Destroy: $destroy"
             echo ""
             echo "This exact plan file is what apply-subsidiary-pim will run after the gate."
           } >> "$GITHUB_STEP_SUMMARY"

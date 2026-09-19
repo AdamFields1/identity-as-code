@@ -1,0 +1,125 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
+  "planned_values": {
+    "root_module": {}
+  },
+  "resource_changes": [
+    {
+      "address": "module.network_zones.okta_network_zone.this[\"corp-egress\"]",
+      "module_address": "module.network_zones",
+      "mode": "managed",
+      "type": "okta_network_zone",
+      "name": "this",
+      "index": "corp-egress",
+      "provider_name": "registry.terraform.io/okta/okta",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "asns": [],
+          "dynamic_locations": [],
+          "dynamic_proxy_type": null,
+          "gateways": ["203.0.113.0/24"],
+          "id": "nzo0placeholder0001",
+          "name": "corp-egress",
+          "proxies": [],
+          "status": "ACTIVE",
+          "type": "IP",
+          "usage": "POLICY"
+        },
+        "after": {
+          "asns": [],
+          "dynamic_locations": [],
+          "dynamic_proxy_type": null,
+          "gateways": ["203.0.113.0/24"],
+          "id": "nzo0placeholder0001",
+          "name": "corp-egress",
+          "proxies": [],
+          "status": "ACTIVE",
+          "type": "IP",
+          "usage": "POLICY"
+        },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "module.session_policy.okta_policy_signon.this",
+      "module_address": "module.session_policy",
+      "mode": "managed",
+      "type": "okta_policy_signon",
+      "name": "this",
+      "provider_name": "registry.terraform.io/okta/okta",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "description": "Baseline session policy",
+          "groups_included": ["00g0placeholder0001"],
+          "id": "00p0placeholder0001",
+          "name": "Baseline sign-on",
+          "priority": 1,
+          "status": "ACTIVE"
+        },
+        "after": {
+          "description": "Baseline session policy",
+          "groups_included": ["00g0placeholder0001"],
+          "id": "00p0placeholder0001",
+          "name": "Baseline sign-on",
+          "priority": 1,
+          "status": "ACTIVE"
+        },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "module.session_policy.okta_policy_rule_signon.this[\"anywhere\"]",
+      "module_address": "module.session_policy",
+      "mode": "managed",
+      "type": "okta_policy_rule_signon",
+      "name": "this",
+      "index": "anywhere",
+      "provider_name": "registry.terraform.io/okta/okta",
+      "change": {
+        "actions": ["delete", "create"],
+        "before": {
+          "access": "ALLOW",
+          "authtype": "ANY",
+          "id": "0pr0placeholder0001",
+          "mfa_required": true,
+          "name": "anywhere",
+          "network_connection": "ANYWHERE",
+          "policy_id": "00p0placeholder0001",
+          "priority": 1,
+          "session_idle": 120,
+          "session_lifetime": 720,
+          "status": "ACTIVE"
+        },
+        "after": {
+          "access": "ALLOW",
+          "authtype": "ANY",
+          "mfa_required": true,
+          "name": "anywhere",
+          "network_connection": "ANYWHERE",
+          "policy_id": "00p0placeholder0002",
+          "priority": 1,
+          "session_idle": 120,
+          "session_lifetime": 720,
+          "status": "ACTIVE"
+        },
+        "after_unknown": {
+          "id": true
+        },
+        "before_sensitive": {},
+        "after_sensitive": {},
+        "replace_paths": [["policy_id"]]
+      },
+      "action_reason": "replace_because_cannot_update"
+    }
+  ],
+  "resource_drift": [],
+  "errored": false,
+  "timestamp": "2026-09-19T12:00:00Z"
+}

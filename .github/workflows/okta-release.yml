@@ -180,15 +180,14 @@ jobs:
           terragrunt show -no-color "$PLAN_DIR/prod.tfplan" > "$PLAN_DIR/prod.txt"
           terragrunt show -json "$PLAN_DIR/prod.tfplan" > "$PLAN_DIR/prod.json"
       - name: Plan summary
+        # tools/plan_gate report: the counts, with the replace, import, and
+        # drift columns the soak checklist asks about (docs/adr/0018).
         run: |
           set -euo pipefail
-          json="$PLAN_DIR/prod.json"
-          add=$(jq '[.resource_changes[]? | select(.change.actions | index("create"))] | length' "$json")
-          change=$(jq '[.resource_changes[]? | select(.change.actions | index("update"))] | length' "$json")
-          destroy=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' "$json")
+          python3 tools/plan_gate/plan_gate.py report "$PLAN_DIR/prod.json" \
+            --github-summary --title "Prod plan taken at merge (${{ github.sha }})" \
+            --json > "$PLAN_DIR/prod.gate.json"
           {
-            echo "### Prod plan taken at merge (${{ github.sha }})"
-            echo "Add: $add, Change: $change, Destroy: $destroy"
             echo ""
             echo "This exact plan file is what apply-prod will run after the soak gate."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -153,6 +153,9 @@ jobs:
       TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
       TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
       PLAN_DIR: ${{ github.workspace }}/plans
+      # The tenant's name as data: run blocks read $TENANT, never the
+      # matrix expression, so a directory name is never script.
+      TENANT: ${{ matrix.tenant }}
 
     steps:
       - name: Checkout
@@ -184,27 +187,69 @@ jobs:
           set -euo pipefail
           mkdir -p "$PLAN_DIR"
           terragrunt init -input=false
-          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/${{ matrix.tenant }}.tfplan"
-          terragrunt show -no-color "$PLAN_DIR/${{ matrix.tenant }}.tfplan" > "$PLAN_DIR/${{ matrix.tenant }}.txt"
-          terragrunt show -json "$PLAN_DIR/${{ matrix.tenant }}.tfplan" > "$PLAN_DIR/${{ matrix.tenant }}.json"
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/$TENANT.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/$TENANT.tfplan" > "$PLAN_DIR/$TENANT.txt"
+          terragrunt show -json "$PLAN_DIR/$TENANT.tfplan" > "$PLAN_DIR/$TENANT.json"
+
+      - name: Plan gate
+        id: gate
+        # tools/plan_gate holds the plan JSON to the convergence profile and
+        # writes its table to the step summary (docs/adr/0018). The verdict
+        # is a report, not a block: a pull request's plan is the change
+        # under review, so "not converged" goes into the summary and the
+        # comment and the reviewer decides. One thing is a block. imports.tf
+        # is a one-shot workstation file that git ignores (README, adopting
+        # an existing tenant), so an import block in a pull request plan came
+        # from a stack's .tf files and would adopt a live object on merge
+        # without the zero-change gate of tests/README.md having read it; the
+        # job is red until it is gone. Exit 2 is a workflow bug (the plan
+        # JSON could not be read) and fails the job either way.
+        run: |
+          set -euo pipefail
+          json="$PLAN_DIR/$TENANT.json"
+          gate="$PLAN_DIR/$TENANT.gate.json"
+          code=0
+          python3 tools/plan_gate/plan_gate.py convergence "$json" \
+            --github-summary --title "Okta plan: $TENANT" \
+            --json > "$gate" || code=$?
+          echo "profile=convergence" >> "$GITHUB_OUTPUT"
+          case "$code" in
+            0) echo "verdict=pass" >> "$GITHUB_OUTPUT" ;;
+            1) echo "verdict=fail" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::plan_gate exited $code for $TENANT: the plan JSON could not be gated. A workflow bug, not a tenant problem."
+              exit "$code"
+              ;;
+          esac
+          imports=$(jq '.plans[0].counts.imports' "$gate")
+          if [ "$imports" -gt 0 ]; then
+            echo "::error::$TENANT plans $imports import block(s) in a pull request. Imports are adopted from a workstation through imports.tf behind the zero-change gate (tests/README.md), never from a pull request; remove the import blocks."
+            exit 1
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "::warning::$TENANT is not converged: this plan changes the tenant. The addresses are in the step summary."
+          fi
 
       - name: Summarise plan
         id: summary
+        # The three counts the comment carries; the step summary table is the
+        # gate's, above, with the replace, import, and drift columns jq does
+        # not see.
         run: |
           set -euo pipefail
-          json="$PLAN_DIR/${{ matrix.tenant }}.json"
+          json="$PLAN_DIR/$TENANT.json"
           add=$(jq '[.resource_changes[]? | select(.change.actions | index("create"))] | length' "$json")
           change=$(jq '[.resource_changes[]? | select(.change.actions | index("update"))] | length' "$json")
           destroy=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' "$json")
           echo "add=$add" >> "$GITHUB_OUTPUT"
           echo "change=$change" >> "$GITHUB_OUTPUT"
           echo "destroy=$destroy" >> "$GITHUB_OUTPUT"
-          {
-            echo "### Okta plan: ${{ matrix.tenant }}"
-            echo "Add: $add, Change: $change, Destroy: $destroy"
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload plan artifact
+        # Uploaded even when the gate is red, so the plan that
+        # failed the gate can be read; nothing to upload when the plan
+        # itself failed.
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: okta-plan-${{ matrix.tenant }}-pr${{ github.event.pull_request.number }}
@@ -212,15 +257,18 @@ jobs:
             ${{ env.PLAN_DIR }}/${{ matrix.tenant }}.tfplan
             ${{ env.PLAN_DIR }}/${{ matrix.tenant }}.txt
             ${{ env.PLAN_DIR }}/${{ matrix.tenant }}.json
+            ${{ env.PLAN_DIR }}/${{ matrix.tenant }}.gate.json
           retention-days: 7
+          if-no-files-found: ignore
 
       - name: Post plan summary as PR comment
         uses: actions/github-script@v7
         env:
-          TENANT: ${{ matrix.tenant }}
           ADD: ${{ steps.summary.outputs.add }}
           CHANGE: ${{ steps.summary.outputs.change }}
           DESTROY: ${{ steps.summary.outputs.destroy }}
+          GATE_PROFILE: ${{ steps.gate.outputs.profile }}
+          GATE_VERDICT: ${{ steps.gate.outputs.verdict }}
         with:
           script: |
             const fs = require('fs');
@@ -235,10 +283,14 @@ jobs:
             const destroyWarning = process.env.DESTROY !== '0'
               ? '\n\n**Warning: this plan destroys resources. Review carefully.**'
               : '';
+            const gateLine = process.env.GATE_VERDICT === 'pass'
+              ? `Plan gate (${process.env.GATE_PROFILE}): **pass**`
+              : `Plan gate (${process.env.GATE_PROFILE}): **not converged**, this plan changes the tenant; the addresses are in the job's step summary`;
             const body = [
               marker,
               `### Okta plan for \`${tenant}\``,
               `Add: **${process.env.ADD}**, Change: **${process.env.CHANGE}**, Destroy: **${process.env.DESTROY}**${destroyWarning}`,
+              gateLine,
               '',
               '<details><summary>Show plan</summary>',
               '',

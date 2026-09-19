@@ -213,3 +213,26 @@ Describe 'Invoke-AppCredentialHygiene' {
         }
     }
 }
+
+Describe 'Invoke-AppCredentialHygiene excluded app names parsing' {
+    . $runbook -SenderMailbox 'iam-noreply@corp.example.com' -AccessToken 'test-token'
+    It 'parses the semicolon list a job schedule passes and trims blanks' {
+        $r = ConvertTo-ExcludedAppNameList -Value ' Legacy Portal ; Break Glass App,, '
+        @($r).Count | Should Be 2
+        $r[0] | Should Be 'Legacy Portal'
+    }
+    It 'parses a JSON array string from a local run' {
+        $r = ConvertTo-ExcludedAppNameList -Value '["Legacy Portal","Break Glass App"]'
+        @($r).Count | Should Be 2
+        $r[1] | Should Be 'Break Glass App'
+    }
+    It 'returns an empty list, not null, for the empty default' {
+        $r = ConvertTo-ExcludedAppNameList -Value ''
+        @($r).Count | Should Be 0
+        $app = [PSCustomObject]@{ id = 'a0'; appId = 'client-a0'; displayName = 'Any App'; tags = @(); passwordCredentials = @(); keyCredentials = @() }
+        (Test-ApplicationExcluded -Application $app -ExcludedAppTag 'NoCredentialHygiene' -ExcludedAppNames $r) | Should Be $false
+    }
+    It 'rejects a malformed JSON array' {
+        { ConvertTo-ExcludedAppNameList -Value '["Legacy Portal"' } | Should Throw
+    }
+}

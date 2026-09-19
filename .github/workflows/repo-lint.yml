@@ -1,0 +1,66 @@
+# The repository's own rules, enforced by a program on every pull request and
+# every push to main (docs/adr/0018).
+#
+# Two tools under tools/, both standard-library Python 3.11 or later.
+# repo_lint checks the tree against the sentences the README and the
+# decision records state (cell shape, locators, placeholders, ASCII, no
+# secrets, README tables, runbook parameters, the ADR index), and plan_gate
+# holds a plan's JSON to a profile. This job runs both test suites, then
+# repo_lint over the whole tree, then cells.py over every cell, so a
+# dependency cycle or an unreadable cell is caught here rather than in a
+# release train.
+#
+# No credential, no environment, no state backend, no Terraform binary, and
+# no network past pip: contents: read is the whole permission set. Neither
+# tool imports anything outside the standard library. pytest is installed
+# because the suites run under it. python-hcl2 is installed because one
+# repo_lint test cross-checks the tool's HCL reader against it and skips when
+# it is absent, and a skipped cross-check is not the check.
+#
+# No path filter: repo_lint reads README.md, docs/, tenants/, automation/,
+# and every text file for the ASCII and secrets checks, so any change can
+# produce a finding.
+
+name: repo-lint
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repo-lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: tool tests, repo_lint, cells
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check "pytest>=8,<10" "python-hcl2>=4,<9"
+
+      - name: plan_gate tests
+        run: python -m pytest tools/plan_gate/tests -q
+
+      - name: repo_lint and cells tests
+        run: python -m pytest tools/repo_lint/tests -q
+
+      - name: repo_lint (every check)
+        run: python tools/repo_lint/repo_lint.py --root . --all
+
+      - name: cells (every cell, in waves)
+        run: python tools/repo_lint/cells.py --root . --all

@@ -1,0 +1,179 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
+  "planned_values": {
+    "root_module": {}
+  },
+  "resource_changes": [
+    {
+      "address": "module.privileged_groups.azuread_group.this[\"grp-pim-owners\"]",
+      "module_address": "module.privileged_groups",
+      "mode": "managed",
+      "type": "azuread_group",
+      "name": "this",
+      "index": "grp-pim-owners",
+      "provider_name": "registry.terraform.io/hashicorp/azuread",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "assignable_to_role": true,
+          "description": "Eligible owners of the prod subscription\n",
+          "display_name": "grp-pim-owners",
+          "id": "66666666-6666-6666-6666-666666666666",
+          "mail_enabled": false,
+          "members": [],
+          "owners": ["77777777-7777-7777-7777-777777777777"],
+          "security_enabled": true,
+          "types": []
+        },
+        "after": {
+          "display_name": "grp-pim-owners",
+          "description": "Eligible owners of the prod subscription",
+          "assignable_to_role": true,
+          "security_enabled": true,
+          "mail_enabled": false,
+          "types": [],
+          "owners": ["77777777-7777-7777-7777-777777777777"],
+          "members": [],
+          "id": "66666666-6666-6666-6666-666666666666"
+        },
+        "after_unknown": {},
+        "before_sensitive": {
+          "members": [],
+          "owners": [false]
+        },
+        "after_sensitive": {
+          "members": [],
+          "owners": [false]
+        }
+      }
+    },
+    {
+      "address": "module.privileged_groups.azuread_group.this[\"grp-pim-readers\"]",
+      "module_address": "module.privileged_groups",
+      "mode": "managed",
+      "type": "azuread_group",
+      "name": "this",
+      "index": "grp-pim-readers",
+      "provider_name": "registry.terraform.io/hashicorp/azuread",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "assignable_to_role": true,
+          "description": "",
+          "display_name": "grp-pim-readers",
+          "id": "88888888-8888-8888-8888-888888888888",
+          "mail_enabled": false,
+          "members": [],
+          "owners": ["77777777-7777-7777-7777-777777777777"],
+          "security_enabled": true,
+          "types": []
+        },
+        "after": {
+          "types": [],
+          "security_enabled": true,
+          "owners": ["77777777-7777-7777-7777-777777777777"],
+          "members": [],
+          "mail_enabled": false,
+          "id": "88888888-8888-8888-8888-888888888888",
+          "display_name": "grp-pim-readers",
+          "description": null,
+          "assignable_to_role": true
+        },
+        "after_unknown": {},
+        "before_sensitive": {
+          "members": [],
+          "owners": [false]
+        },
+        "after_sensitive": {
+          "members": [],
+          "owners": [false]
+        }
+      }
+    },
+    {
+      "address": "module.role_policies.azuread_group_role_management_policy.this[\"grp-pim-owners|member\"]",
+      "module_address": "module.role_policies",
+      "mode": "managed",
+      "type": "azuread_group_role_management_policy",
+      "name": "this",
+      "index": "grp-pim-owners|member",
+      "provider_name": "registry.terraform.io/hashicorp/azuread",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "activation_rules": [
+            {
+              "approval_stage": [],
+              "maximum_duration": "PT8H",
+              "require_approval": false,
+              "require_justification": true,
+              "require_multifactor_authentication": true,
+              "require_ticket_info": false,
+              "required_conditional_access_authentication_context": ""
+            }
+          ],
+          "active_assignment_rules": [
+            {
+              "expiration_required": true,
+              "expire_after": "P90D",
+              "require_justification": true,
+              "require_multifactor_authentication": true,
+              "require_ticket_info": false
+            }
+          ],
+          "description": "PIM policy for grp-pim-owners",
+          "display_name": "Group PIM policy: grp-pim-owners",
+          "eligible_assignment_rules": [
+            {
+              "expiration_required": true,
+              "expire_after": "P365D"
+            }
+          ],
+          "group_id": "66666666-6666-6666-6666-666666666666",
+          "id": "99999999-9999-9999-9999-999999999999",
+          "role_id": "member"
+        },
+        "after": {
+          "role_id": "member",
+          "id": "99999999-9999-9999-9999-999999999999",
+          "group_id": "66666666-6666-6666-6666-666666666666",
+          "eligible_assignment_rules": [
+            {
+              "expire_after": "P365D",
+              "expiration_required": true
+            }
+          ],
+          "display_name": "Group PIM policy: grp-pim-owners",
+          "description": "PIM policy for grp-pim-owners",
+          "active_assignment_rules": [
+            {
+              "require_ticket_info": false,
+              "require_multifactor_authentication": true,
+              "require_justification": true,
+              "expire_after": "P90D",
+              "expiration_required": true
+            }
+          ],
+          "activation_rules": [
+            {
+              "required_conditional_access_authentication_context": null,
+              "require_ticket_info": false,
+              "require_multifactor_authentication": true,
+              "require_justification": true,
+              "require_approval": false,
+              "maximum_duration": "PT8H",
+              "approval_stage": []
+            }
+          ]
+        },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    }
+  ],
+  "resource_drift": [],
+  "errored": false,
+  "timestamp": "2026-09-19T12:00:00Z"
+}

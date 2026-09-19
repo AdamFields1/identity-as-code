@@ -1,0 +1,201 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
+  "planned_values": {
+    "root_module": {}
+  },
+  "resource_changes": [
+    {
+      "address": "module.custom_roles.azurerm_role_definition.this[\"pim-operator\"]",
+      "module_address": "module.custom_roles",
+      "mode": "managed",
+      "type": "azurerm_role_definition",
+      "name": "this",
+      "index": "pim-operator",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "assignable_scopes": ["/subscriptions/11111111-1111-1111-1111-111111111111"],
+          "description": "Activate and review PIM eligibilities without standing access",
+          "name": "PIM Operator",
+          "permissions": [
+            {
+              "actions": [
+                "Microsoft.Authorization/roleAssignments/read",
+                "Microsoft.Authorization/roleEligibilityScheduleInstances/read"
+              ],
+              "data_actions": [],
+              "not_actions": [],
+              "not_data_actions": []
+            }
+          ],
+          "role_definition_id": "22222222-2222-2222-2222-222222222222",
+          "scope": "/subscriptions/11111111-1111-1111-1111-111111111111",
+          "timeouts": null
+        },
+        "after": {
+          "assignable_scopes": ["/subscriptions/11111111-1111-1111-1111-111111111111"],
+          "description": "Activate and review PIM eligibilities without standing access",
+          "name": "PIM Operator",
+          "permissions": [
+            {
+              "actions": [
+                "Microsoft.Authorization/roleAssignments/read",
+                "Microsoft.Authorization/roleEligibilityScheduleInstances/read"
+              ],
+              "data_actions": [],
+              "not_actions": [],
+              "not_data_actions": []
+            }
+          ],
+          "role_definition_id": "22222222-2222-2222-2222-222222222222",
+          "scope": "/subscriptions/11111111-1111-1111-1111-111111111111",
+          "timeouts": null
+        },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {},
+        "importing": {
+          "id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/22222222-2222-2222-2222-222222222222"
+        }
+      }
+    },
+    {
+      "address": "module.custom_roles.azurerm_role_definition.this[\"reader-plus\"]",
+      "module_address": "module.custom_roles",
+      "mode": "managed",
+      "type": "azurerm_role_definition",
+      "name": "this",
+      "index": "reader-plus",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "assignable_scopes": ["/subscriptions/11111111-1111-1111-1111-111111111111"],
+          "description": "Reader plus support ticket creation",
+          "name": "Reader Plus",
+          "permissions": [
+            {
+              "actions": ["*/read", "Microsoft.Support/*"],
+              "data_actions": [],
+              "not_actions": [],
+              "not_data_actions": []
+            }
+          ],
+          "role_definition_id": "33333333-3333-3333-3333-333333333333",
+          "scope": "/subscriptions/11111111-1111-1111-1111-111111111111",
+          "timeouts": null
+        },
+        "after": {
+          "assignable_scopes": ["/subscriptions/11111111-1111-1111-1111-111111111111"],
+          "description": "Reader plus support ticket creation",
+          "name": "Reader Plus",
+          "permissions": [
+            {
+              "actions": ["*/read", "Microsoft.Support/*"],
+              "data_actions": [],
+              "not_actions": [],
+              "not_data_actions": []
+            }
+          ],
+          "role_definition_id": "33333333-3333-3333-3333-333333333333",
+          "scope": "/subscriptions/11111111-1111-1111-1111-111111111111",
+          "timeouts": null
+        },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {},
+        "importing": {
+          "id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/33333333-3333-3333-3333-333333333333"
+        }
+      }
+    },
+    {
+      "address": "module.custom_roles.azurerm_role_definition.this[\"automation-runner\"]",
+      "module_address": "module.custom_roles",
+      "mode": "managed",
+      "type": "azurerm_role_definition",
+      "name": "this",
+      "index": "automation-runner",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "assignable_scopes": ["/subscriptions/11111111-1111-1111-1111-111111111111"],
+          "description": "Runs the governance runbooks",
+          "name": "Automation Runner",
+          "permissions": [
+            {
+              "actions": [
+                "Microsoft.Authorization/roleManagementPolicies/read",
+                "Microsoft.Authorization/roleManagementPolicies/write"
+              ],
+              "data_actions": [],
+              "not_actions": [],
+              "not_data_actions": []
+            }
+          ],
+          "role_definition_id": "44444444-4444-4444-4444-444444444444",
+          "scope": "/subscriptions/11111111-1111-1111-1111-111111111111",
+          "timeouts": null
+        },
+        "after": {
+          "assignable_scopes": ["/subscriptions/11111111-1111-1111-1111-111111111111"],
+          "description": "Runs the governance runbooks and reads PIM settings",
+          "name": "Automation Runner",
+          "permissions": [
+            {
+              "actions": [
+                "Microsoft.Authorization/roleManagementPolicies/read",
+                "Microsoft.Authorization/roleManagementPolicies/write"
+              ],
+              "data_actions": [],
+              "not_actions": [],
+              "not_data_actions": []
+            }
+          ],
+          "role_definition_id": "44444444-4444-4444-4444-444444444444",
+          "scope": "/subscriptions/11111111-1111-1111-1111-111111111111",
+          "timeouts": null
+        },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {},
+        "importing": {
+          "id": "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleDefinitions/44444444-4444-4444-4444-444444444444"
+        }
+      }
+    },
+    {
+      "address": "module.custom_roles.data.azurerm_subscriptions.by_display_name[\"sub-example-prod\"]",
+      "module_address": "module.custom_roles",
+      "mode": "data",
+      "type": "azurerm_subscriptions",
+      "name": "by_display_name",
+      "index": "sub-example-prod",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["read"],
+        "before": null,
+        "after": {
+          "display_name_contains": null,
+          "display_name_prefix": "sub-example-prod",
+          "timeouts": null
+        },
+        "after_unknown": {
+          "id": true,
+          "subscriptions": true
+        },
+        "before_sensitive": false,
+        "after_sensitive": {
+          "subscriptions": []
+        }
+      },
+      "action_reason": "read_because_config_unknown"
+    }
+  ],
+  "resource_drift": [],
+  "errored": false,
+  "timestamp": "2026-09-19T12:00:00Z"
+}

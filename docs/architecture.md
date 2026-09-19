@@ -109,6 +109,11 @@ flowchart LR
     ACCT["commercial/accounts/*/*"]
   end
 
+  subgraph tools["tools (Python, standard library; runs on a runner or a workstation, never in a tenant)"]
+    PGT[plan_gate]
+    RLT["repo_lint\ncells"]
+  end
+
   subgraph pipelines[".github/workflows"]
     OPR[okta-pr-validation]
     OREL[okta-release]
@@ -116,6 +121,7 @@ flowchart LR
     AREL[azure-release]
     WPR[aws-pr-validation]
     WREL[aws-release]
+    RL[repo-lint]
   end
 
   NZ --> SO
@@ -231,6 +237,15 @@ flowchart LR
   CSUB --> AREL
   ACCT --> WPR
   ACCT --> WREL
+
+  PGT -.plan gate.-> OPR
+  PGT -.plan gate.-> APR
+  PGT -.plan gate.-> WPR
+  PGT -.report.-> OREL
+  PGT -.report.-> AREL
+  PGT -.report.-> WREL
+  RLT -.cells.py waves.-> WREL
+  RLT --> RL
 ```
 
 Dependencies only point one way. Modules know nothing about stacks. Stacks know
@@ -299,8 +314,21 @@ shapes as values, and the app stacks under `stacks/apps` that hold one
 application's composition (ADR 0017). The diagram shows `sub-example-prod`
 and the two commercial accounts; a new account or subscription is a directory
 with a locator, and the pull request workflows find cells by the presence of
-`terragrunt.hcl`, not by depth; a new cell also needs its plan and apply
-jobs added to the release train, which lists cells explicitly.
+`terragrunt.hcl`, not by depth. A new AWS cell needs no workflow edit,
+because `aws-release` reads its cells and their waves from
+`tools/repo_lint/cells.py`; a new Azure cell still needs its plan and apply
+jobs added to `azure-release`, which lists cells explicitly (ADR 0018 says
+why that train is the follow-up).
+
+The tools under `tools/` are the one layer that is not an input to a plan.
+They read the repository and a plan's JSON, on a runner or a workstation,
+and never a tenant: `plan_gate` holds a plan to a profile after every pull
+request plan and reports the merge-time plan at each gate; `repo_lint`
+checks the tree against the sentences this document and the README state;
+`cells` finds the cells, selects the ones a change touches, and orders them
+into the waves the AWS release train runs. They are Python with no
+dependency outside the standard library, and the runbooks stay PowerShell
+because Azure Automation runs them (ADR 0018).
 
 ## Inside the stack
 
@@ -666,14 +694,15 @@ sequenceDiagram
   participant Okta as Okta tenants
 
   Dev->>PR: open pull request
-  PR->>PR: fmt, tflint, checkov, validate
+  PR->>PR: fmt, tflint, checkov, validate (repo-lint runs beside it)
   PR->>Okta: terragrunt plan (changed tenants, read-only token)
-  PR-->>Dev: plan summary as PR comment + artifact
+  PR->>PR: plan gate: convergence verdict, red on any import block
+  PR-->>Dev: plan summary and gate verdict as PR comment + artifact
   Dev->>Main: merge
   Main->>Rel: push event
   par at merge time
     Rel->>Okta: plan dev
-    Rel->>Okta: plan prod (artifact saved)
+    Rel->>Okta: plan prod (artifact saved, plan_gate report in the step summary)
   end
   Rel->>Okta: apply dev
   Rel->>Gate: soak gate waits
@@ -737,6 +766,12 @@ corp cells, so a change to a baseline or a cell alone still runs the checks that
 guard it. It needs no credential and holds `contents: read` only, because
 every HTTP call in those tests is mocked.
 
+A fourth workflow belongs to no family: `repo-lint` runs the two tool test
+suites under pytest, then `tools/repo_lint/repo_lint.py` over the whole tree
+and `tools/repo_lint/cells.py` over every cell, on every pull request and
+push to `main`, with `contents: read` and nothing installed but pytest and
+the optional `python-hcl2` cross-check (ADR 0018).
+
 `aws-release` has the same shape with commercial in the dev position and GovCloud
 in the prod position. Each job names its GitHub environment, and the environment
 supplies that partition's OIDC role and state bucket, so the two halves of the
@@ -746,11 +781,15 @@ not map the SCIM credentials into `TF_VAR_scim_credentials`, and until they do
 that cell is applied from a workstation (ADR 0008).
 
 Both trains carry the account and subscription cells after the tenant-wide
-ones. `aws-release` applies the commercial account cells after the Identity
-Center cell, one chain per account and the accounts in parallel:
-`aws-account-baseline`, then `aws-account-workloads`, then the app stacks,
-and the GovCloud gate waits for the last apply of every account.
-`azure-release` applies the corp subscription cells after the corp tenant
+ones. `aws-release` does not list its cells: a first job runs
+`tools/repo_lint/cells.py --family aws` and the plan and apply jobs run the
+waves it emits, the Identity Center cell, then every account's
+`aws-account-baseline`, then the `aws-account-workloads` catalogs, then the
+app stacks, each wave applied before the next plans, with the GovCloud cell
+planned at merge time and applied after the gate as before. A new AWS cell
+lands in its wave with no workflow edit; a red cell stops the train at its
+wave. `azure-release` still lists its cells (ADR 0018 says why) and applies
+the corp subscription cells after the corp tenant
 cells: `azure-subscription-baseline` first, because the other cells name the
 workspace it creates, then `azure-subscription-workloads` and `data-pipeline`
 side by side, and the subsidiary gate waits for both. The pull request

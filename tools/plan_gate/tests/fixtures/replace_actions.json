@@ -1,0 +1,141 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
+  "planned_values": {
+    "root_module": {}
+  },
+  "resource_changes": [
+    {
+      "address": "module.permission_sets.aws_ssoadmin_permission_set.this[\"ReadOnly\"]",
+      "module_address": "module.permission_sets",
+      "mode": "managed",
+      "type": "aws_ssoadmin_permission_set",
+      "name": "this",
+      "index": "ReadOnly",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": ["create", "delete"],
+        "before": {
+          "arn": "arn:aws:sso:::permissionSet/ssoins-placeholder0001/ps-placeholder0001",
+          "created_date": "2026-01-01T00:00:00Z",
+          "description": "Read-only access",
+          "id": "arn:aws:sso:::permissionSet/ssoins-placeholder0001/ps-placeholder0001,arn:aws:sso:::instance/ssoins-placeholder0001",
+          "instance_arn": "arn:aws:sso:::instance/ssoins-placeholder0001",
+          "name": "ReadOnly",
+          "relay_state": null,
+          "session_duration": "PT8H",
+          "tags": {},
+          "tags_all": {}
+        },
+        "after": {
+          "description": "Read-only access",
+          "instance_arn": "arn:aws:sso:::instance/ssoins-placeholder0001",
+          "name": "ReadOnlyV2",
+          "relay_state": null,
+          "session_duration": "PT8H",
+          "tags": {},
+          "tags_all": {}
+        },
+        "after_unknown": {
+          "arn": true,
+          "created_date": true,
+          "id": true
+        },
+        "before_sensitive": {
+          "tags": {},
+          "tags_all": {}
+        },
+        "after_sensitive": {
+          "tags": {},
+          "tags_all": {}
+        },
+        "replace_paths": [["name"]]
+      },
+      "action_reason": "replace_because_cannot_update"
+    },
+    {
+      "address": "module.account_assignments.aws_ssoadmin_account_assignment.this[\"AWS-aws-111111111111-ReadOnly\"]",
+      "module_address": "module.account_assignments",
+      "mode": "managed",
+      "type": "aws_ssoadmin_account_assignment",
+      "name": "this",
+      "index": "AWS-aws-111111111111-ReadOnly",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": ["delete", "create"],
+        "before": {
+          "id": "placeholder-group-0001,GROUP,111111111111,AWS_ACCOUNT,arn:aws:sso:::permissionSet/ssoins-placeholder0001/ps-placeholder0001,arn:aws:sso:::instance/ssoins-placeholder0001",
+          "instance_arn": "arn:aws:sso:::instance/ssoins-placeholder0001",
+          "permission_set_arn": "arn:aws:sso:::permissionSet/ssoins-placeholder0001/ps-placeholder0001",
+          "principal_id": "placeholder-group-0001",
+          "principal_type": "GROUP",
+          "target_id": "111111111111",
+          "target_type": "AWS_ACCOUNT"
+        },
+        "after": {
+          "instance_arn": "arn:aws:sso:::instance/ssoins-placeholder0001",
+          "principal_id": "placeholder-group-0001",
+          "principal_type": "GROUP",
+          "target_id": "111111111111",
+          "target_type": "AWS_ACCOUNT"
+        },
+        "after_unknown": {
+          "id": true,
+          "permission_set_arn": true
+        },
+        "before_sensitive": {},
+        "after_sensitive": {},
+        "replace_paths": [["permission_set_arn"]]
+      },
+      "action_reason": "replace_because_cannot_update"
+    },
+    {
+      "address": "module.permission_sets.aws_ssoadmin_permission_set.this[\"Admin\"]",
+      "module_address": "module.permission_sets",
+      "mode": "managed",
+      "type": "aws_ssoadmin_permission_set",
+      "name": "this",
+      "index": "Admin",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "arn": "arn:aws:sso:::permissionSet/ssoins-placeholder0001/ps-placeholder0002",
+          "created_date": "2026-01-01T00:00:00Z",
+          "description": "Administrator access, PIM-gated in Entra",
+          "id": "arn:aws:sso:::permissionSet/ssoins-placeholder0001/ps-placeholder0002,arn:aws:sso:::instance/ssoins-placeholder0001",
+          "instance_arn": "arn:aws:sso:::instance/ssoins-placeholder0001",
+          "name": "Admin",
+          "relay_state": null,
+          "session_duration": "PT1H",
+          "tags": {},
+          "tags_all": {}
+        },
+        "after": {
+          "arn": "arn:aws:sso:::permissionSet/ssoins-placeholder0001/ps-placeholder0002",
+          "created_date": "2026-01-01T00:00:00Z",
+          "description": "Administrator access, PIM-gated in Entra",
+          "id": "arn:aws:sso:::permissionSet/ssoins-placeholder0001/ps-placeholder0002,arn:aws:sso:::instance/ssoins-placeholder0001",
+          "instance_arn": "arn:aws:sso:::instance/ssoins-placeholder0001",
+          "name": "Admin",
+          "relay_state": null,
+          "session_duration": "PT1H",
+          "tags": {},
+          "tags_all": {}
+        },
+        "after_unknown": {},
+        "before_sensitive": {
+          "tags": {},
+          "tags_all": {}
+        },
+        "after_sensitive": {
+          "tags": {},
+          "tags_all": {}
+        }
+      }
+    }
+  ],
+  "resource_drift": [],
+  "errored": false,
+  "timestamp": "2026-09-19T12:00:00Z"
+}

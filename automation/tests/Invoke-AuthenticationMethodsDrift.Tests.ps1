@@ -154,3 +154,31 @@ Describe 'Invoke-AuthenticationMethodsDrift recipients parsing' {
         { ConvertTo-RecipientList -Value '["a@corp.example.com"' } | Should Throw
     }
 }
+
+Describe 'Invoke-AuthenticationMethodsDrift method ids parsing' {
+    . $runbook -SenderMailbox 'iam-noreply@corp.example.com' -Recipients 'iam@corp.example.com' -AccessToken 'test-token'
+    It 'parses the shipped default into the eight ids, in order' {
+        $r = ConvertTo-MethodIdList -Value $MethodIds
+        @($r).Count | Should Be 8
+        $r[0] | Should Be 'Fido2'
+        $r[7] | Should Be 'X509Certificate'
+    }
+    It 'parses a semicolon or comma list and trims blanks' {
+        $r = ConvertTo-MethodIdList -Value ' Fido2 ; Sms,, '
+        @($r).Count | Should Be 2
+        $r[1] | Should Be 'Sms'
+    }
+    It 'parses a JSON array string from a local run' {
+        $r = ConvertTo-MethodIdList -Value '["Fido2","Sms"]'
+        @($r).Count | Should Be 2
+    }
+    It 'returns an array for a single id' {
+        @(ConvertTo-MethodIdList -Value 'Fido2').Count | Should Be 1
+    }
+    It 'rejects an empty list rather than managing nothing' {
+        { ConvertTo-MethodIdList -Value ' ; ' } | Should Throw
+    }
+    It 'rejects a value that is not an id' {
+        { ConvertTo-MethodIdList -Value 'Fido2; not an id' } | Should Throw
+    }
+}

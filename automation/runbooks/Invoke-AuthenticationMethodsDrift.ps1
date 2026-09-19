@@ -54,8 +54,12 @@
     is AuthMethods_Fido2.
 
 .PARAMETER MethodIds
-    Method configuration ids to manage. Default: the eight the folder ships.
-    A missing variable for a listed id is an error, never a silent skip.
+    Method configuration ids to manage, as one string separated by
+    semicolons (commas separate too). Default: the eight the folder ships.
+    A missing variable for a listed id is an error, never a silent skip, and
+    an empty list is refused for the same reason. It is a string rather than
+    a string array for the reason Recipients is; a local run may pass a JSON
+    array.
 
 .PARAMETER DesiredStatePath
     Workstation only: read the desired state from this folder instead of
@@ -119,7 +123,7 @@ param(
 
     [string]$VariablePrefix = 'AuthMethods_',
 
-    [string[]]$MethodIds = @('Fido2', 'MicrosoftAuthenticator', 'TemporaryAccessPass', 'Sms', 'Voice', 'Email', 'SoftwareOath', 'X509Certificate'),
+    [string]$MethodIds = 'Fido2;MicrosoftAuthenticator;TemporaryAccessPass;Sms;Voice;Email;SoftwareOath;X509Certificate',
 
     [string]$DesiredStatePath = '',
 
@@ -648,6 +652,33 @@ function ConvertTo-RecipientList {
     return ,$list
 }
 
+function ConvertTo-MethodIdList {
+    <# Turns the MethodIds string into an array of method configuration ids.
+       Accepts a JSON array or a comma or semicolon separated list, trims
+       blanks, and refuses an empty result: a runbook told to manage no
+       method would report zero drift for the wrong reason. #>
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+    $text = $Value.Trim()
+    $items = @()
+    if ($text.StartsWith('[')) {
+        try { $parsed = ConvertFrom-Json -InputObject $text }
+        catch { throw ('MethodIds looks like a JSON array but does not parse: {0}' -f $_.Exception.Message) }
+        foreach ($element in $parsed) { $items += $element }
+    }
+    else {
+        $items = @($text -split '[,;]')
+    }
+    $list = @()
+    foreach ($item in $items) {
+        $id = ([string]$item).Trim()
+        if ($id.Length -eq 0) { continue }
+        if ($id -notmatch '^[A-Za-z0-9]+$') { throw ('MethodIds contains a value that is not a method configuration id: "{0}"' -f $id) }
+        $list += $id
+    }
+    if ($list.Count -eq 0) { throw 'MethodIds is empty. Supply at least one method configuration id.' }
+    return ,$list
+}
+
 # ---------------------------------------------------------------------------
 # Entry point. Skipped when the file is dot-sourced (tests load the functions
 # that way); Azure Automation and a direct invocation run it.
@@ -655,6 +686,6 @@ function ConvertTo-RecipientList {
 
 if ($MyInvocation.InvocationName -ne '.') {
     Invoke-AuthenticationMethodsDriftRun -SenderMailbox $SenderMailbox -Recipients (ConvertTo-RecipientList -Value $Recipients) -VariablePrefix $VariablePrefix `
-        -MethodIds $MethodIds -DesiredStatePath $DesiredStatePath -AllowMigrationStateChange ([bool]$AllowMigrationStateChange) `
+        -MethodIds (ConvertTo-MethodIdList -Value $MethodIds) -DesiredStatePath $DesiredStatePath -AllowMigrationStateChange ([bool]$AllowMigrationStateChange) `
         -ReportPath $ReportPath -DryRun ([bool]$DryRun) -Environment $Environment -ClientId $ClientId -AccessToken $AccessToken
 }

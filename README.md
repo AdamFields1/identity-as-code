@@ -221,11 +221,33 @@ identity-as-code/
       govcloud/
         partition.hcl
         aws-identity-center/terragrunt.hcl
-  .github/workflows/            PR validation and release trains: okta-* (dev -> prod), azure-* (corp, then its subscriptions -> subsidiary), aws-* (commercial, then its accounts -> govcloud), plus automation-tests (Pester on 5.1 and 7)
+  .github/workflows/            PR validation and release trains: okta-* (dev -> prod), azure-* (corp, then its subscriptions -> subsidiary), aws-* (commercial, then its accounts -> govcloud,
+                                in the waves cells.py computes), plus automation-tests (Pester on 5.1 and 7) and repo-lint (the tool tests, repo_lint, and cells on every pull request)
   scripts/                      PowerShell helpers to adopt an existing tenant, export drift, import live PIM eligibilities, and enforce the authentication methods policy
-  tests/                        zero-change import gate
+  tests/                        zero-change import gate: the rule; tools/plan_gate is the program
+  tools/                        CI and repository tooling: Python 3.11+, standard library only, tested with pytest (docs/adr/0018)
+    plan_gate/                  plan_gate.py: holds a plan's JSON to a profile (adoption, convergence, scoped-replace, report)
+    repo_lint/                  repo_lint.py (the rules this README and the ADRs state, as checks) and cells.py (cell discovery, selection, and waves)
   docs/                         architecture diagrams and decision records
 ```
+
+## Tooling
+
+The workflows and the READMEs had grown logic of their own: plan arithmetic
+in `jq`, cell discovery in shell, a release order restated once per train,
+and a dozen rules about the repository that only a reader enforced. That
+logic now lives in one place, `tools/`, as Python 3.11 or later with no
+dependency outside the standard library, tested with pytest, and the
+workflows call it ([ADR 0018](docs/adr/0018-ci-tooling-in-python.md)).
+
+| Tool | What it does | Where it runs |
+|------|--------------|---------------|
+| `tools/plan_gate` | Holds a plan's JSON (`terragrunt show -json`) to a profile: `adoption` (every entry a no-op, importing or not, and the import count matching `imports.tf`), `convergence` (no change and no import), `scoped-replace` (only allowlisted addresses may change), or `report`. Counts a replace as one replace, lists drift apart from changes, names addresses and attributes and never a value. Exit 0 pass, 1 findings, 2 usage or input error. | After every pull request plan, `convergence` as a verdict in the step summary and the comment, and a red job on any import block, because `imports.tf` never rides in a pull request. `adoption`, the zero-change import gate of `tests/README.md`, on the workstation that holds `imports.tf`, at step 3 of adopting a tenant; a `workflow_dispatch` job for it is sketched in the tool's README and not written yet. `report` on every AWS release plan and on the merge-time plan the reviewer approves at the Okta and Azure gates |
+| `tools/repo_lint/repo_lint.py` | Eight checks, each carrying the sentence of this README or an ADR it comes from: cell shape, locators, placeholders, ASCII, no secrets, README tables, runbook parameters, the ADR index | `repo-lint` on every pull request and push to `main` |
+| `tools/repo_lint/cells.py` | Discovers the cells, selects the ones a change touches, and orders them into waves from the rules the trains state | `repo-lint` (every cell, so a cycle is caught early); the AWS release train, whose plan and apply jobs run the waves it emits |
+
+The runbooks stay PowerShell because Azure Automation runs them: the line is
+where the code runs, not a preference (ADR 0018).
 
 ## Why these choices
 
@@ -374,6 +396,22 @@ without an explicit switch, because that one field retires the legacy MFA and
 SSPR settings tenant-wide. See
 [ADR 0012](docs/adr/0012-authentication-methods-policy-as-desired-state.md).
 
+**The repository lints its own rules, and a plan is gated by a program.**
+The rules on this page are sentences, and a sentence is enforced by whoever
+remembers it. `tools/repo_lint` turns eight of them into checks, each with
+the sentence it comes from in its docstring, and runs on every pull request;
+its first run found two runbook parameters the automation README had
+excepted. `tools/plan_gate` reads a plan's JSON and holds it to a profile,
+so the zero-change import gate is a program with one line per offending
+address rather than a paragraph, a pull request plan that carries an import
+block is a red job, and the plan a reviewer approves at a gate has already
+been counted, replaces and drift included. `tools/repo_lint/cells.py` finds the cells and orders them
+into waves, and the AWS release train reads that instead of listing its
+cells. All three are Python 3.11 or later with no dependency outside the
+standard library, because every runner has that and nothing else; the
+runbooks stay PowerShell because Azure Automation runs them. See
+[ADR 0018](docs/adr/0018-ci-tooling-in-python.md).
+
 **Path is environment, via Terragrunt.** `tenants/okta/dev`, `tenants/okta/prod`,
 `tenants/azure/corp`, `tenants/azure/subsidiary`, `tenants/aws/commercial`, and
 `tenants/aws/govcloud` are the only places those words appear. There is no
@@ -430,11 +468,12 @@ roles cell before planning the corp governance and automation cells, because
 both resolve custom roles by name at plan time, and applies the corp
 automation cell after the governance cell so corp is complete before the
 subsidiary gate opens. Both trains then carry the cells that are scoped to
-one account or subscription (ADR 0017): the AWS train applies the commercial
-account cells after the Identity Center cell, one chain per account, baseline
-before catalog before app stack, and the GovCloud gate waits for the last
-apply of every account; the Azure train applies the corp subscription cells
-after the corp tenant cells, baseline first because the other cells name the
+one account or subscription (ADR 0017): the AWS train reads its cells and
+their order from `tools/repo_lint/cells.py` and applies them in waves, the
+Identity Center cell, then every account's baseline, then the catalogs, then
+the app stacks, and the GovCloud gate waits for the last wave; the Azure
+train still lists its cells and applies the corp subscription cells after
+the corp tenant cells, baseline first because the other cells name the
 workspace it creates, and the subsidiary gate waits for them too.
 
 That ordering has a review cost worth stating: a pull request that introduces
@@ -552,8 +591,11 @@ To adopt an existing tenant instead of creating policies from scratch:
 1. Run `scripts/Import-OktaPolicies.ps1` against the tenant. It emits `imports.tf`
    and a `values.skeleton.hcl` you paste into the tenant cell.
 2. Drop `imports.tf` into the tenant directory. `root.hcl` picks it up automatically.
-3. Plan. Adjust values until the plan shows 0 to add, 0 to change, 0 to destroy.
-   `tests/README.md` describes the gate that enforces this in CI.
+3. Plan, then hold the plan to the gate: `terragrunt show -json` and
+   `tools/plan_gate/plan_gate.py adoption`. Adjust values until it is green: 0 to
+   add, 0 to change, 0 to destroy, every import a no-op. `tests/README.md`
+   describes the gate; it runs here, on the workstation, because `imports.tf` is
+   ignored by git and never reaches a pull request.
 4. Apply (this only records the imports), then delete `imports.tf`.
 
 For PIM eligibilities, `scripts/Export-PimEligibilityImports.ps1` does the same
@@ -746,6 +788,20 @@ object accepts `policyMigrationState` when the guard is lifted (the reference
 lists it as a property but not in the updatable table), and that the
 `Recipients` parameter binds from the job schedule's semicolon string. Run
 `-Export` into a scratch folder first and diff it against the shipped files.
+
+The tooling layer (`tools/plan_gate`, `tools/repo_lint`) was written and run
+here, against this tree, with Python 3.12: 80 plan_gate tests and
+77 repo_lint and cells tests pass under pytest with no network and no
+Terraform binary, `repo_lint.py --all` passes over every file (its first run
+found the two `[string[]]` runbook parameters the automation README had
+excepted, now semicolon strings like every other list, with Pester tests for
+the parsers, and the Pester suite still passes under Windows PowerShell 5.1
+with Pester 3.4.0), and `cells.py` finds the 22 cells in six waves. What
+only a run on GitHub can confirm: the matrix the AWS release train reads
+from `cells.py`, the `fromJson` indexing of its wave jobs and the skip rules
+between them, and the step summary and pull request comment the plan gate
+writes; every workflow file parses as YAML and was reviewed by reading, not
+run.
 
 ## License
 

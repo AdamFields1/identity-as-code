@@ -108,9 +108,12 @@ a file under `policies/`, the schedule passes the variable's name, and the
 runbook reads it with `Get-AutomationStringVariable`. A baseline variable that
 is missing or unreadable stops the run rather than falling back to defaults,
 and every runbook refuses a value that starts with `@{`, `System.Object`, or
-`System.Collections.`. No `[switch]`, and no `[string[]]`, on a parameter a
-schedule sets. The authentication methods runbook keeps a
-`[string[]]$MethodIds` that no schedule sets.
+`System.Collections.`. No `[switch]`, and no `[string[]]`, on any top-level
+runbook parameter, whether or not a schedule sets it today: `tools/repo_lint`
+refuses both (`runbook-params`), so the two lists no schedule sets yet
+(`ExcludedAppNames` on the credential hygiene runbook, `MethodIds` on the
+authentication methods runbook) are semicolon strings parsed the way
+`Recipients` is, and a cell can set them tomorrow without a signature change.
 
 **Every destructive action has a cap, and the kind of cap is chosen per
 action.** Credential removal is capped by `-MaxRemovalsPerRun` (default 25) and

@@ -65,7 +65,13 @@
     NoCredentialHygiene.
 
 .PARAMETER ExcludedAppNames
-    Display names of registrations to skip, in addition to the tag.
+    Display names of registrations to skip, in addition to the tag, as one
+    string separated by semicolons (commas separate too, so a name that
+    contains either cannot be listed here; tag it instead). Empty, the
+    default, excludes nothing by name. It is a string rather than a string
+    array because a job schedule hands every value over as a string and the
+    Automation service may parse a JSON-looking value before it binds; a
+    local run may still pass a JSON array.
 
 .PARAMETER FallbackRecipient
     Where the digest for a registration with no resolvable owner goes. When
@@ -131,7 +137,7 @@ param(
 
     [string]$ExcludedAppTag = 'NoCredentialHygiene',
 
-    [string[]]$ExcludedAppNames = @(),
+    [string]$ExcludedAppNames = '',
 
     [string]$FallbackRecipient = '',
 
@@ -838,6 +844,33 @@ function Invoke-CredentialHygieneRun {
     return $summary
 }
 
+function ConvertTo-ExcludedAppNameList {
+    <# Turns the ExcludedAppNames string into an array of display names.
+       Accepts a JSON array (a local run) or a semicolon or comma separated
+       list (a job schedule), trims blanks, and drops empties. An empty value
+       is an empty list: nothing is excluded by name. #>
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+    $text = $Value.Trim()
+    $items = @()
+    if ($text.StartsWith('[')) {
+        try { $parsed = ConvertFrom-Json -InputObject $text }
+        catch { throw ('ExcludedAppNames looks like a JSON array but does not parse: {0}' -f $_.Exception.Message) }
+        # Windows PowerShell 5.1 emits a parsed JSON array as one object, so
+        # enumerate it explicitly rather than trusting @() to unroll it.
+        foreach ($element in $parsed) { $items += $element }
+    }
+    elseif ($text.Length -gt 0) {
+        $items = @($text -split '[,;]')
+    }
+    $list = @()
+    foreach ($item in $items) {
+        $name = ([string]$item).Trim()
+        if ($name.Length -eq 0) { continue }
+        $list += $name
+    }
+    return ,$list
+}
+
 # ---------------------------------------------------------------------------
 # Entry point. Skipped when the file is dot-sourced (tests load the functions
 # that way); Azure Automation and a direct invocation run it.
@@ -846,6 +879,6 @@ function Invoke-CredentialHygieneRun {
 if ($MyInvocation.InvocationName -ne '.') {
     Invoke-CredentialHygieneRun -SenderMailbox $SenderMailbox -WarnDays $WarnDays -RemoveExpired ([bool]$RemoveExpired) `
         -RemoveAfterDays $RemoveAfterDays -MaxRemovalsPerRun $MaxRemovalsPerRun -ExcludedAppTag $ExcludedAppTag `
-        -ExcludedAppNames $ExcludedAppNames -FallbackRecipient $FallbackRecipient -ReportPath $ReportPath `
+        -ExcludedAppNames (ConvertTo-ExcludedAppNameList -Value $ExcludedAppNames) -FallbackRecipient $FallbackRecipient -ReportPath $ReportPath `
         -DryRun ([bool]$DryRun) -Environment $Environment -ClientId $ClientId -AccessToken $AccessToken
 }

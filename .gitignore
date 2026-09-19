@@ -28,6 +28,11 @@ terragrunt-debug.tfvars.json
 tenants/**/imports.tf
 scripts/out/
 
+# Python tooling under tools/ (docs/adr/0018)
+__pycache__/
+*.pyc
+.pytest_cache/
+
 # Editors and OS
 .idea/
 .vscode/
