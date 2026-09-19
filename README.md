@@ -21,6 +21,38 @@ This is a portfolio repository by Adam Fields. It exists to show design decision
 the reasoning behind them, not to be a feature-complete wrapper for any provider.
 Every name, CIDR, and ID in it is a placeholder.
 
+## Three layers
+
+Everything in this repository sits in one of three layers, and each layer answers
+one question.
+
+**Modules answer how.** A module knows how to build one kind of thing: a permission
+set, a Conditional Access policy, an Okta network zone. It takes typed, validated
+inputs and knows nothing about which tenant it is in. `modules/` is the only place
+that holds a resource block.
+
+**Stacks answer what must change together.** A stack composes modules into the
+smallest set of resources that has to be planned and applied as one to leave a
+tenant consistent: zones together with the rules that reference them, permission
+sets together with the assignments that use them. A stack is where names are
+resolved to IDs, so it is the only place with logic. One stack is one state file,
+one plan to review, and one blast radius. A stack may compose one module or
+several; what makes it a stack is the deployment boundary, not the count.
+
+**Cells answer where, and with what values.** A tenant is a folder of cells. Each
+cell is one stack applied for one tenant, and it contains exactly three things: an
+include of the shared root, a source pointing at the stack, and an inputs map of
+values. No resources, no data sources, no conditionals, no IDs. A cell calls a
+stack, never a module, so composition never leaks into the tenant layer and a
+tenant file can be reviewed by someone who has never opened the admin console.
+Whatever is identical for every cell (state backend, provider generation, the
+adoption hook) lives once in that tenant family's `root.hcl`.
+
+The runbooks, policies, and scripts under `automation/`, `policies/`, and `scripts/`
+are the governance that cannot be a Terraform resource; they are deployed and
+delivered by stacks like everything else. The decision records under `docs/adr/`
+carry the reasoning for each of these choices.
+
 ## History
 
 The patterns here were developed and used separately over several years, on
