@@ -103,7 +103,9 @@ as `@{...}` or as a space-joined array. So a list is one `[string]` holding a
 semicolon list, written `join(";", [...])` in the cell (a comma separates
 too, and no element may contain either), parsed with the library's
 `ConvertTo-StringList`; a JSON array is still accepted from a local run, where
-the text arrives unchanged. An object, which means a PIM baseline, is not a
+the text arrives unchanged, as long as it ends with its closing bracket
+(PowerShell 7 would otherwise read an unterminated array as its elements). An
+object, which means a PIM baseline, is not a
 parameter at all: the stack publishes it as an Automation string variable from
 a file under `policies/`, the schedule passes the variable's name, and the
 runbook reads it with `Get-AutomationStringVariable`. A baseline variable that
@@ -429,7 +431,7 @@ deliberate list:
 | `Invoke-HttpCore` | every library runbook and the library itself | the one `Invoke-WebRequest` call; a router answers each documented URL with the JSON shape the API reference documents |
 | `Start-Sleep` | every library runbook, the library, and the app credential runbook | retries and propagation waits, so a test of five attempts takes no minutes |
 | `Test-AzAccountsAvailable` | every library runbook except the backup runbook, and the library | keeps the token path off `Az.Accounts` when the module happens to be installed |
-| `Invoke-WebRequest` | the library's own tests, and as a guard in three runbook tests | proves the identity endpoint call, or fails the test if anything reaches the network below the core |
+| `Invoke-WebRequest` | the library's own tests, and, as a tripwire or a router one level below the core, in three runbook tests | proves the identity endpoint call, or fails the test if anything reaches the network below the core |
 | `Connect-AzAccount`, `Get-AzContext`, `Get-AzAccessToken` | the library's tests only | the `Az.Accounts` fallback path |
 | `ConvertFrom-RunbookJsonText` | the library's tests only | to return the PowerShell 5.1 shape of a parsed JSON array on either edition |
 | `Get-AutomationVariable` (a global stand-in) and `$script:RunbookAutomationVariables` | Entra PIM drift, Azure PIM governance, and the library | stands in for the Automation sandbox, which has no cmdlet outside a job |

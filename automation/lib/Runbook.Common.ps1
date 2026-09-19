@@ -532,8 +532,9 @@ function ConvertTo-SuppliedTokenTable {
     if ($text.Length -eq 0) { return $null }
     if (-not $text.StartsWith('{')) { return $text }
 
-    # An unterminated object is refused on both editions; PowerShell 7 would
-    # otherwise read what it could of it.
+    # A value that starts with "{" must also end with "}". Both editions refuse
+    # a truncated object on their own; the check also keeps out text after the
+    # object, such as a comment, which PowerShell 7 reads past without error.
     $parsed = $null
     if ($text.EndsWith('}')) {
         try { $parsed = ConvertFrom-RunbookJsonText -Json $text }

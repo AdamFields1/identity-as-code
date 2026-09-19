@@ -147,4 +147,5 @@ workstation run needs nothing but the repository.
   same suite on `windows-latest` three ways, `powershell` (5.1) with that
   shipped 3.4.0, `powershell` with Pester 4.10.1, and `pwsh` (7) with Pester
   4.10.1, so the PowerShell 7 paths and both Pester lines are covered by a
-  test run on every pull request that touches `automation/` or `scripts/`.
+  test run on every pull request and push that touches `automation/`,
+  `scripts/`, `policies/`, or `tenants/`.
