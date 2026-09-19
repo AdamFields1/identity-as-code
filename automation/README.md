@@ -31,6 +31,7 @@ automation/
     Runbook.Common.Tests.ps1               the shared library, including its inline contract with the runbooks module
     PolicyBaselines.Tests.ps1              the PIM baseline files, the corp cell that publishes them, and the transport rules
     Invoke-Tests.ps1                       parse gate plus Pester runner
+    Pester.Support.ps1                     Suspend-MockAlias, for the tests that run a runbook file from disk
 ```
 
 The related export helper, `scripts/Export-PimEligibilityImports.ps1`, lives with
@@ -404,13 +405,21 @@ runs Pester: 3.4.0 on a stock Windows PowerShell 5.1, or the exact version
 `-PesterVersion` names. The tests use the `Should Be` syntax that 3.x and 4.x
 share, so Pester 5 will not run them; install 4.10.1 with
 `Install-Module Pester -RequiredVersion 4.10.1 -Force -SkipPublisherCheck -Scope CurrentUser`
-to run them on PowerShell 7. `.github/workflows/automation-tests.yml` does
-exactly that on `windows-latest`, under both `powershell` (5.1) and `pwsh`
-(7), for every pull request and push that touches `automation/`, `scripts/`,
-`policies/`, or `tenants/`. The last two are in the trigger because the suite
+to run them on PowerShell 7. `.github/workflows/automation-tests.yml` runs
+the suite on `windows-latest` three ways, `powershell` (5.1) with the 3.4.0
+Windows ships, `powershell` with 4.10.1, and `pwsh` (7) with 4.10.1, for every
+pull request and push that touches `automation/`, `scripts/`, `policies/`, or
+`tenants/`. The last two are in the trigger because the suite
 asserts against them: `PolicyBaselines.Tests.ps1` reads the two PIM baselines
 and the corp cells, and several runbook tests compare a runbook's header with
 the corp automation cell.
+
+The tests that run a runbook file from disk, to prove the copy's own transport
+made the calls, go through `Suspend-MockAlias` in `Pester.Support.ps1`. Pester
+3 installs a mock as a function, which a function the script defines for
+itself shadows; Pester 4 installs it as an alias, which outranks that function
+in every child scope. The helper lifts the alias for that one run and puts it
+back, and the workflow runs both Pester lines so the difference stays covered.
 
 Nothing in the tests reaches a tenant, and the seams they mock are a short,
 deliberate list:

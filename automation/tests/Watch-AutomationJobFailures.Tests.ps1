@@ -16,10 +16,13 @@
 # last context runs the runbook file from disk and assembled the way
 # modules/azure/automation-runbooks inlines the library, with
 # Invoke-WebRequest mocked one level lower, because a script started with the
-# call operator defines its own Invoke-HttpCore. Nothing here leaves the
-# machine or waits.
+# call operator defines its own Invoke-HttpCore. Each of those runs goes
+# through Suspend-MockAlias (Pester.Support.ps1), which lifts the
+# Invoke-HttpCore mock so the file's own definition is the one that runs.
+# Nothing here leaves the machine or waits.
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path -Path $here -ChildPath 'Pester.Support.ps1')
 $automationRoot = Split-Path -Parent $here
 $repoRoot = Split-Path -Parent $automationRoot
 $runbook = Join-Path -Path $automationRoot -ChildPath 'runbooks\Watch-AutomationJobFailures.ps1'
@@ -2081,7 +2084,7 @@ Describe 'Watch-AutomationJobFailures' {
             $copy = Join-Path -Path $runbooksDir -ChildPath 'Watch-AutomationJobFailures.ps1'
             Copy-Item -Path $runbook -Destination $copy
 
-            $summary = & $copy -AutomationAccountName 'aa-example-watch' -ResourceGroupName 'rg-example-automation' -SubscriptionName 'Example Identity Subscription' -Recipients 'iam@corp.example.com' -AccessToken $tokens -RunId $runId 3>$null 4>$null
+            $summary = Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock { & $copy -AutomationAccountName 'aa-example-watch' -ResourceGroupName 'rg-example-automation' -SubscriptionName 'Example Identity Subscription' -Recipients 'iam@corp.example.com' -AccessToken $tokens -RunId $runId 3>$null 4>$null }
             @($summary).Count | Should Be 1
             $summary.Runbook | Should Be 'Watch-AutomationJobFailures'
             $summary.RunId | Should Be $runId
@@ -2101,8 +2104,8 @@ Describe 'Watch-AutomationJobFailures' {
             # This run uses the real clock; without schedule links no due run
             # can move the list start, so it is exactly the window minus 600.
             $global:JwfTenant.JobSchedules = @()
-            $copy =Join-Path -Path $TestDrive -ChildPath 'automation\runbooks\Watch-AutomationJobFailures.ps1'
-            $summary = & $copy -AutomationAccountName 'aa-example-watch' -ResourceGroupName 'rg-example-automation' -SubscriptionName $subscriptionId -MaxJobRuntimeMinutes 600 -AccessToken $tokens 3>$null 4>$null
+            $copy = Join-Path -Path $TestDrive -ChildPath 'automation\runbooks\Watch-AutomationJobFailures.ps1'
+            $summary = Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock { & $copy -AutomationAccountName 'aa-example-watch' -ResourceGroupName 'rg-example-automation' -SubscriptionName $subscriptionId -MaxJobRuntimeMinutes 600 -AccessToken $tokens 3>$null 4>$null }
             $summary.JobListStartUtc | Should Match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
             $listStart = [DateTimeOffset]::Parse($summary.JobListStartUtc, $inv).UtcDateTime
             $windowStart = [DateTimeOffset]::Parse($summary.WindowStartUtc, $inv).UtcDateTime
@@ -2126,7 +2129,7 @@ Describe 'Watch-AutomationJobFailures' {
             New-Item -ItemType Directory -Path (Split-Path -Parent $published) -Force | Out-Null
             [System.IO.File]::WriteAllText($published, $assembled, (New-Object System.Text.UTF8Encoding($false)))
 
-            $summary = & $published -AutomationAccountName 'aa-example-watch' -ResourceGroupName 'rg-example-automation' -SubscriptionName $subscriptionId -Environment USGov -AccessToken $tokens -RunId $runId 3>$null 4>$null
+            $summary = Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock { & $published -AutomationAccountName 'aa-example-watch' -ResourceGroupName 'rg-example-automation' -SubscriptionName $subscriptionId -Environment USGov -AccessToken $tokens -RunId $runId 3>$null 4>$null }
             @($summary).Count | Should Be 1
             $summary.Runbook | Should Be 'Watch-AutomationJobFailures'
             $summary.Environment | Should Be 'USGov'
@@ -2136,7 +2139,7 @@ Describe 'Watch-AutomationJobFailures' {
             (Get-WriteSequence) | Should Be ''
 
             $global:JwfRequests.Clear()
-            { & $published -AutomationAccountName 'aa-example-watch' -ResourceGroupName 'rg-example-automation' -SubscriptionName $subscriptionId -DryRun $false -AccessToken $tokens 3>$null 4>$null } | Should Throw 'Recipients is required'
+            { Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock { & $published -AutomationAccountName 'aa-example-watch' -ResourceGroupName 'rg-example-automation' -SubscriptionName $subscriptionId -DryRun $false -AccessToken $tokens 3>$null 4>$null } } | Should Throw 'Recipients is required'
             $global:JwfRequests.Count | Should Be 0
         }
     }

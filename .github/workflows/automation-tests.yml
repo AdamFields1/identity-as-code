@@ -4,19 +4,25 @@
 # "Testing locally"), so this job needs no cloud credential, no environment,
 # and no state backend. Its only permission is contents: read.
 #
-# Two jobs, because the runbooks have to run on both editions. Azure
-# Automation publishes them as PowerShell72 and a workstation or a Hybrid
-# Runbook Worker may run them under Windows PowerShell 5.1, so the same tests
-# run under powershell (5.1) and pwsh (7) on windows-latest. Pester is pinned
-# to 4.10.1 in both: 5.x would not run the Should Be assertion syntax the
-# tests use, and Windows PowerShell ships 3.4.0, which the tests also pass
-# under but which is not what a reviewer should have to install.
+# Three jobs, all on windows-latest, because the runbooks have to run on both
+# editions and the tests claim both Pester lines:
 #
-# Why two jobs rather than a matrix over the shell: GitHub Actions does not
-# evaluate expressions in a step's shell key (it is absent from the context
-# availability table), so shell: ${{ matrix.shell }} is read as the literal
-# name of a shell and the workflow file is rejected before any job starts.
-# The two jobs are identical except for that one word.
+#   powershell (5.1), Pester 3.4.0    the copy Windows ships, nothing installed:
+#                                     a stock workstation or Hybrid Runbook Worker
+#   powershell (5.1), Pester 4.10.1   what a reviewer installs once
+#   pwsh (7), Pester 4.10.1           the edition Azure Automation runs
+#
+# Pester 5 would not run the Should Be assertion syntax the tests use. The two
+# Pester lines install a mock differently (a function in 3, an alias in 4),
+# which the tests that run a runbook file from disk have to allow for;
+# automation/tests/Pester.Support.ps1 explains it. Running both lines is what
+# keeps that difference from coming back.
+#
+# Why separate jobs rather than a matrix over the shell: GitHub Actions does
+# not evaluate expressions in a step's shell key (it is absent from the
+# context availability table), so shell: ${{ matrix.shell }} is read as the
+# literal name of a shell and the workflow file is rejected before any job
+# starts. The jobs are identical except for the shell and the Pester version.
 #
 # Invoke-Tests.ps1 parses every .ps1 under automation/ and scripts/ first and
 # fails the job before a single test runs if one of them does not parse. It
@@ -58,12 +64,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  pester-windows-powershell:
-    name: pester (Windows PowerShell 5.1)
+  pester-windows-powershell-shipped:
+    name: pester (Windows PowerShell 5.1, Pester 3.4.0 as shipped)
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Run the suite
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./automation/tests/Invoke-Tests.ps1 -PesterVersion 3.4.0 -OutputPath ./out/test-results-powershell-pester3.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pester-powershell-pester3-${{ github.sha }}
+          path: out/test-results-powershell-pester3.xml
+          retention-days: 7
+          if-no-files-found: warn
+
+  pester-windows-powershell:
+    name: pester (Windows PowerShell 5.1, Pester 4.10.1)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
 
       - name: Install Pester 4.10.1
         shell: powershell
@@ -79,24 +108,24 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Import-Module -Name Pester -RequiredVersion 4.10.1 -Force
-          ./automation/tests/Invoke-Tests.ps1 -PesterVersion 4.10.1 -OutputPath ./out/test-results-powershell.xml
+          ./automation/tests/Invoke-Tests.ps1 -PesterVersion 4.10.1 -OutputPath ./out/test-results-powershell-pester4.xml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: pester-powershell-${{ github.sha }}
-          path: out/test-results-powershell.xml
+          name: pester-powershell-pester4-${{ github.sha }}
+          path: out/test-results-powershell-pester4.xml
           retention-days: 7
           if-no-files-found: warn
 
   pester-pwsh:
-    name: pester (PowerShell 7)
+    name: pester (PowerShell 7, Pester 4.10.1)
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Pester 4.10.1
         shell: pwsh
@@ -112,14 +141,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Import-Module -Name Pester -RequiredVersion 4.10.1 -Force
-          ./automation/tests/Invoke-Tests.ps1 -PesterVersion 4.10.1 -OutputPath ./out/test-results-pwsh.xml
+          ./automation/tests/Invoke-Tests.ps1 -PesterVersion 4.10.1 -OutputPath ./out/test-results-pwsh-pester4.xml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: pester-pwsh-${{ github.sha }}
-          path: out/test-results-pwsh.xml
+          name: pester-pwsh-pester4-${{ github.sha }}
+          path: out/test-results-pwsh-pester4.xml
           retention-days: 7
           if-no-files-found: warn

@@ -12,10 +12,13 @@
 # sandbox's Get-AutomationVariable, which each test removes again. The last
 # context runs the runbook file itself, from disk and assembled the way
 # modules/azure/automation-runbooks inlines the library, against a mocked
-# Invoke-WebRequest. Nothing here leaves the machine.
+# Invoke-WebRequest, with the Invoke-HttpCore mock lifted for each run by
+# Suspend-MockAlias (Pester.Support.ps1) so the file's own transport is the
+# seam. Nothing here leaves the machine.
 
 $thisTestFile = $MyInvocation.MyCommand.Path
 $here = Split-Path -Parent $thisTestFile
+. (Join-Path -Path $here -ChildPath 'Pester.Support.ps1')
 $automationRoot = Split-Path -Parent $here
 $runbook = Join-Path -Path $automationRoot -ChildPath 'runbooks\Invoke-EntraPimPolicyDrift.ps1'
 $library = Join-Path -Path $automationRoot -ChildPath 'lib\Runbook.Common.ps1'
@@ -1746,7 +1749,7 @@ Describe 'Invoke-EntraPimPolicyDrift' {
             Copy-Item -Path $runbook -Destination $diskPath
 
             Set-TestTenant
-            $summary = @(& $diskPath -AccessToken $token -RunId $runId -BaselineVariableName '' -Recipients 'iam@corp.example.com' -SenderMailbox 'iam-noreply@corp.example.com' 4>$null 3>$null 2>$null)
+            $summary = @(Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock { & $diskPath -AccessToken $token -RunId $runId -BaselineVariableName '' -Recipients 'iam@corp.example.com' -SenderMailbox 'iam-noreply@corp.example.com' 4>$null 3>$null 2>$null })
             $summary.Count | Should Be 1
             $summary[0].Runbook | Should Be 'Invoke-EntraPimPolicyDrift'
             $summary[0].RunId | Should Be $runId
@@ -1784,7 +1787,7 @@ Describe 'Invoke-EntraPimPolicyDrift' {
             try {
                 Set-TestSandboxVariable -Value '{"mode":"minimum","groups":{"PIM Tier 0 Operators":{"maximumActivationDuration":"PT8H"}}}'
                 Set-TestTenant
-                $summary = @(& $published -AccessToken $token -RunId $runId -Environment USGov -DryRun $false -Recipients 'iam@corp.example.com;secops@corp.example.com' -SenderMailbox 'iam-noreply@corp.example.com' -IncludeGroupNames 'PIM Tier 0 Operators' 4>$null 3>$null 2>$null)
+                $summary = @(Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock { & $published -AccessToken $token -RunId $runId -Environment USGov -DryRun $false -Recipients 'iam@corp.example.com;secops@corp.example.com' -SenderMailbox 'iam-noreply@corp.example.com' -IncludeGroupNames 'PIM Tier 0 Operators' 4>$null 3>$null 2>$null })
                 ($global:PimTestVariableCalls -join ',') | Should Be 'PimPolicy_EntraBaseline'
             }
             finally {
@@ -1813,7 +1816,7 @@ Describe 'Invoke-EntraPimPolicyDrift' {
             New-Item -ItemType Directory -Path (Split-Path -Parent $published) -Force | Out-Null
             [System.IO.File]::WriteAllText($published, ($head + $begin + "`n" + $libraryText + "`n" + $end + $tail), (New-Object System.Text.UTF8Encoding($false)))
             Set-TestTenant
-            { & $published -AccessToken $token -BaselineVariableName '' -DryRun $false -MaxRuleUpdatesPerRun 1 4>$null 3>$null 2>$null } | Should Throw 'Circuit breaker tripped: PIM policy rule updates: 2 planned, cap is 1.'
+            { Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock { & $published -AccessToken $token -BaselineVariableName '' -DryRun $false -MaxRuleUpdatesPerRun 1 4>$null 3>$null 2>$null } } | Should Throw 'Circuit breaker tripped: PIM policy rule updates: 2 planned, cap is 1.'
             @(Get-TestRequests -Method PATCH).Count | Should Be 0
         }
     }

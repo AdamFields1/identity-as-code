@@ -18,7 +18,7 @@
 
       1. -PesterVersion, when given: that exact version, or the run fails
          saying how to install it. This is what .github/workflows/automation-tests.yml
-         passes, so the two shells in its matrix run the same version.
+         passes in each of its jobs, one of them the 3.4.0 Windows ships.
       2. A Pester 3 or 4 module already imported in this session: left alone,
          so a caller who imported a particular build gets it.
       3. The newest installed version below 5.

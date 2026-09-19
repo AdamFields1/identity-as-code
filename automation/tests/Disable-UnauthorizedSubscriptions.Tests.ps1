@@ -13,12 +13,17 @@
 # published id of the built-in Owner role, a public constant the runbook must
 # check against.
 #
+# The last context runs the runbook file from disk. Those runs go through
+# Suspend-MockAlias (Pester.Support.ps1), so the copy's own Invoke-HttpCore,
+# the offline core appended to its library, is the seam rather than the mock.
+#
 # A subscription is canceled only when DryRun is false and AllowCancel is
 # true. Most run tests pass AllowCancel $true through $runArgs so they can
 # follow the cancel path; the 'DryRun and AllowCancel' context covers all four
 # combinations and the defaults.
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path -Path $here -ChildPath 'Pester.Support.ps1')
 $automationRoot = Split-Path -Parent $here
 $repoRoot = Split-Path -Parent $automationRoot
 $runbook = Join-Path -Path $automationRoot -ChildPath 'runbooks\Disable-UnauthorizedSubscriptions.ps1'
@@ -1850,7 +1855,7 @@ function Invoke-HttpCore {
         It 'runs from disk through the entry point with the dot-sourced library' {
             $copy = Get-OfflineCopy
             $global:DusOfflineHosts = New-Object System.Collections.ArrayList
-            $summary = & $copy -SenderMailbox 'iam-noreply@corp.example.com' -AccessToken $jsonTokens -RunId $runId 3>$null 4>$null
+            $summary = Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock { & $copy -SenderMailbox 'iam-noreply@corp.example.com' -AccessToken $jsonTokens -RunId $runId 3>$null 4>$null }
             @($summary).Count | Should Be 1
             $summary.Runbook | Should Be 'Disable-UnauthorizedSubscriptions'
             $summary.RunId | Should Be $runId
@@ -1868,9 +1873,10 @@ function Invoke-HttpCore {
             $emitted = New-Object System.Collections.ArrayList
             $caught = ''
             try {
-                & $copy -SenderMailbox 'iam-noreply@corp.example.com' -Recipients 'cloud-governance@corp.example.com' -AllowedOwnerUpns 'alex@corp.example.com' `
-                    -ElevationPropagationSeconds 0 -DryRun $false -AllowCancel $true -AccessToken $jsonTokens -RunId $runId 2>$null 3>$null 4>$null |
-                    ForEach-Object { [void]$emitted.Add($_) }
+                Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock {
+                    & $copy -SenderMailbox 'iam-noreply@corp.example.com' -Recipients 'cloud-governance@corp.example.com' -AllowedOwnerUpns 'alex@corp.example.com' `
+                        -ElevationPropagationSeconds 0 -DryRun $false -AllowCancel $true -AccessToken $jsonTokens -RunId $runId 2>$null 3>$null 4>$null
+                } | ForEach-Object { [void]$emitted.Add($_) }
             }
             catch { $caught = $_.Exception.Message }
 
@@ -1892,8 +1898,10 @@ function Invoke-HttpCore {
         It 'ends a clean live run with AllowCancel through the entry point without throwing' {
             Set-StandardTenant -Only @($subCandidate)
             $copy = Get-OfflineCopy -Core $fakeCloudCore
-            $summary = & $copy -SenderMailbox 'iam-noreply@corp.example.com' -Recipients 'cloud-governance@corp.example.com' -AllowedOwnerUpns 'alex@corp.example.com' `
-                -ElevationPropagationSeconds 0 -DryRun $false -AllowCancel $true -AccessToken $jsonTokens -RunId $runId 3>$null 4>$null
+            $summary = Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock {
+                & $copy -SenderMailbox 'iam-noreply@corp.example.com' -Recipients 'cloud-governance@corp.example.com' -AllowedOwnerUpns 'alex@corp.example.com' `
+                    -ElevationPropagationSeconds 0 -DryRun $false -AllowCancel $true -AccessToken $jsonTokens -RunId $runId 3>$null 4>$null
+            }
             @($summary).Count | Should Be 1
             $summary.AllowCancel | Should Be $true
             $summary.CanceledCount | Should Be 1
@@ -1904,8 +1912,10 @@ function Invoke-HttpCore {
         It 'never elevates or cancels through the entry point unless AllowCancel is passed' {
             Set-StandardTenant -Only @($subCandidate)
             $copy = Get-OfflineCopy -Core $fakeCloudCore
-            $summary = & $copy -SenderMailbox 'iam-noreply@corp.example.com' -Recipients 'cloud-governance@corp.example.com;iam-team@corp.example.com' -AllowedOwnerUpns 'alex@corp.example.com' `
-                -ElevationPropagationSeconds 0 -DryRun $false -AccessToken $jsonTokens -RunId $runId 3>$null 4>$null
+            $summary = Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock {
+                & $copy -SenderMailbox 'iam-noreply@corp.example.com' -Recipients 'cloud-governance@corp.example.com;iam-team@corp.example.com' -AllowedOwnerUpns 'alex@corp.example.com' `
+                    -ElevationPropagationSeconds 0 -DryRun $false -AccessToken $jsonTokens -RunId $runId 3>$null 4>$null
+            }
             @($summary).Count | Should Be 1
             $summary.DryRun | Should Be $false
             $summary.AllowCancel | Should Be $false
@@ -1922,7 +1932,7 @@ function Invoke-HttpCore {
         It 'refuses an unsafe offer pattern through the entry point before any request' {
             $copy = Get-OfflineCopy
             $global:DusOfflineHosts = New-Object System.Collections.ArrayList
-            { & $copy -SenderMailbox 'iam-noreply@corp.example.com' -RestrictedQuotaIdPatterns '*' -AccessToken $jsonTokens 3>$null 4>$null } | Should Throw 'EnterpriseAgreement_2014-09-01'
+            { Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock { & $copy -SenderMailbox 'iam-noreply@corp.example.com' -RestrictedQuotaIdPatterns '*' -AccessToken $jsonTokens 3>$null 4>$null } } | Should Throw 'EnterpriseAgreement_2014-09-01'
             $global:DusOfflineHosts.Count | Should Be 0
         }
 
@@ -1941,14 +1951,16 @@ function Invoke-HttpCore {
             New-Item -ItemType Directory -Path (Split-Path -Parent $published) -Force | Out-Null
             [System.IO.File]::WriteAllText($published, $assembled, (New-Object System.Text.UTF8Encoding($false)))
             $global:DusOfflineHosts = New-Object System.Collections.ArrayList
-            $summary = & {
-                param($PublishedPath, $CoreText, $TokenText, $CorrelationId)
-                . $PublishedPath -SenderMailbox 'iam-noreply@corp.example.com' -Environment USGov -AccessToken $TokenText -RunId $CorrelationId
-                . ([scriptblock]::Create($CoreText))
-                $VerbosePreference = 'SilentlyContinue'
-                $WarningPreference = 'SilentlyContinue'
-                Invoke-DisableUnauthorizedSubscriptionsRun -SenderMailbox 'iam-noreply@corp.example.com' -Environment USGov -AccessToken $TokenText -RunId $CorrelationId
-            } $published $offlineCore $jsonTokens $runId
+            $summary = Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock {
+                & {
+                    param($PublishedPath, $CoreText, $TokenText, $CorrelationId)
+                    . $PublishedPath -SenderMailbox 'iam-noreply@corp.example.com' -Environment USGov -AccessToken $TokenText -RunId $CorrelationId
+                    . ([scriptblock]::Create($CoreText))
+                    $VerbosePreference = 'SilentlyContinue'
+                    $WarningPreference = 'SilentlyContinue'
+                    Invoke-DisableUnauthorizedSubscriptionsRun -SenderMailbox 'iam-noreply@corp.example.com' -Environment USGov -AccessToken $TokenText -RunId $CorrelationId
+                } $published $offlineCore $jsonTokens $runId
+            }
             @($summary).Count | Should Be 1
             $summary.Environment | Should Be 'USGov'
             $summary.RunId | Should Be $runId
