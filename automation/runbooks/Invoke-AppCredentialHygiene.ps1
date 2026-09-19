@@ -853,6 +853,8 @@ function ConvertTo-ExcludedAppNameList {
     $text = $Value.Trim()
     $items = @()
     if ($text.StartsWith('[')) {
+        # PowerShell 7 reads an unterminated array without an error; refuse it on both editions.
+        if (-not $text.EndsWith(']')) { throw 'ExcludedAppNames looks like a JSON array but does not parse: it does not end with "]".' }
         try { $parsed = ConvertFrom-Json -InputObject $text }
         catch { throw ('ExcludedAppNames looks like a JSON array but does not parse: {0}' -f $_.Exception.Message) }
         # Windows PowerShell 5.1 emits a parsed JSON array as one object, so

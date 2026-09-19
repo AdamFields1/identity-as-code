@@ -124,6 +124,20 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
 
 $result = Invoke-Pester @params
 
+# On GitHub Actions, say which PowerShell and Pester ran and name each failed
+# test in an annotation, so the run's summary page shows what failed without
+# opening the log (the editions and the two Pester lines do not behave the
+# same, so the version matters). A workflow command is one line: the
+# message's newlines become spaces and its percent signs are escaped.
+if ($env:GITHUB_ACTIONS -eq 'true') {
+    Write-Output ('::notice title=Pester::Pester {0} on PowerShell {1} ({2}): {3} passed, {4} failed.' -f $pester.Version, $PSVersionTable.PSVersion, $PSVersionTable.PSEdition, $result.PassedCount, $result.FailedCount)
+    foreach ($test in @($result.TestResult | Where-Object { $_.Result -eq 'Failed' })) {
+        $message = (([string]$test.FailureMessage) -replace '%', '%25') -replace '\r?\n', ' '
+        if ($message.Length -gt 400) { $message = $message.Substring(0, 400) }
+        Write-Output ('::error title=Pester::{0} > {1} > {2}: {3}' -f $test.Describe, $test.Context, $test.Name, $message)
+    }
+}
+
 Write-Output ''
 Write-Output ('Result: {0} passed, {1} failed, {2} skipped.' -f $result.PassedCount, $result.FailedCount, $result.SkippedCount)
 exit ([int]$result.FailedCount)

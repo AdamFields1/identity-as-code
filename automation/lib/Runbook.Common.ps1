@@ -532,9 +532,13 @@ function ConvertTo-SuppliedTokenTable {
     if ($text.Length -eq 0) { return $null }
     if (-not $text.StartsWith('{')) { return $text }
 
+    # An unterminated object is refused on both editions; PowerShell 7 would
+    # otherwise read what it could of it.
     $parsed = $null
-    try { $parsed = ConvertFrom-RunbookJsonText -Json $text }
-    catch { $parsed = $null }
+    if ($text.EndsWith('}')) {
+        try { $parsed = ConvertFrom-RunbookJsonText -Json $text }
+        catch { $parsed = $null }
+    }
     if (-not (Test-RunbookJsonObject -Value $parsed)) {
         throw 'AccessToken starts with "{" but is not a JSON object with Graph, Arm, or Storage keys. The value is not shown.'
     }
@@ -1937,9 +1941,11 @@ function ConvertTo-StringList {
         The JSON array form, ["a","b"], is still accepted for local runs and
         tests, where the text reaches the runbook unchanged; it lets an
         element contain a comma or a semicolon. A value that starts with "["
-        must parse as a JSON array of scalars, or the call throws naming the
-        parameter. A string array (a local call) is accepted too, each
-        element parsed the same way. Blank entries are dropped and order is
+        must end with "]" and parse as a JSON array of scalars, or the call
+        throws naming the parameter (PowerShell 7 would otherwise read an
+        unterminated array as its elements). A string array (a local call)
+        is accepted too, each element parsed the same way. Blank entries are
+        dropped and order is
         kept.
 
         The JSON is parsed with ConvertFrom-RunbookJsonText, so both editions
@@ -1983,6 +1989,12 @@ function ConvertTo-StringList {
     }
 
     if ($text.StartsWith('[')) {
+        # PowerShell 7 reads an unterminated array ("[a" with no closing
+        # bracket) as its elements without an error, where Windows PowerShell
+        # throws; the check is made here so both editions refuse it.
+        if (-not $text.EndsWith(']')) {
+            throw ('{0} looks like a JSON array but does not parse: it does not end with "]".' -f $Label)
+        }
         $parsed = $null
         try { $parsed = ConvertFrom-RunbookJsonText -Json $text }
         catch { throw ('{0} looks like a JSON array but does not parse: {1}' -f $Label, (Protect-RunbookText -Text $_.Exception.Message -MaxLength 200)) }

@@ -1049,15 +1049,21 @@ Describe 'Watch-AutomationJobFailures' {
     # Its own context: a Pester 3.4 mock stays in force for the rest of the
     # context it is made in.
     Context 'runs with times parsed the way PowerShell 7 parses them' {
+        # The real cmdlet parses, with -NoEnumerate where it has it so a
+        # top-level array keeps its shape, and the result goes back in the
+        # comma form: on PowerShell 7, Write-Output -NoEnumerate wraps a
+        # single object in a list, which the library then rejects.
         Mock ConvertFrom-Json {
-            $parsedJson = & $global:JwfJsonCmdlet -InputObject $InputObject
+            $real = @{ InputObject = $InputObject }
+            if ($global:JwfJsonCmdlet.Parameters.ContainsKey('NoEnumerate')) { $real.NoEnumerate = $true }
+            $parsedJson = & $global:JwfJsonCmdlet @real
             if ($parsedJson -is [string]) {
                 $asDate = ConvertTo-JwfPowerShell7Date -Text $parsedJson
                 if ($null -ne $asDate) { return $asDate }
                 return $parsedJson
             }
             Update-JwfPowerShell7Dates -Value $parsedJson
-            Write-Output -NoEnumerate $parsedJson
+            return ,$parsedJson
         }
 
         It 'turns ISO times into DateTime values, as PowerShell 7 does' {
