@@ -24,10 +24,14 @@
     mock stays in force for every other test in the file, including the
     Assert-MockCalled that follows the run. Under Pester 3 there is no alias
     and the function is a pass-through. It touches only the commands it is
-    given: the other mocks (Start-Sleep, Test-AzAccountsAvailable, the
-    Invoke-WebRequest tripwire or router) stay in force for the run from disk,
-    which is what keeps it offline and deterministic on a runner that has
-    Az.Accounts installed.
+    given: mocks of commands the copy does not define for itself (Start-Sleep,
+    the Invoke-WebRequest tripwire or router) stay in force for the run from
+    disk on both Pester lines, which is what keeps it offline. A mock of a
+    function the copy's library also defines (Test-AzAccountsAvailable) stays
+    in force under Pester 4 only; under Pester 3 the copy's own definition
+    shadows it, as it always did. The helper assumes an alias it removes is
+    the one Pester installed in the test file's script scope, which is where
+    it puts it back.
 
 .EXAMPLE
     $summary = Suspend-MockAlias -Name 'Invoke-HttpCore' -ScriptBlock {

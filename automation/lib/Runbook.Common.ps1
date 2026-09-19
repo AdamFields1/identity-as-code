@@ -1973,6 +1973,11 @@ function ConvertTo-StringList {
     )
 
     if ($null -eq $Value) { return }
+    if ($Value -is [System.Collections.IDictionary]) {
+        # A hashtable enumerates as itself, which would recurse until the call
+        # depth overflows; say what the contract is instead.
+        throw ('{0} must be a string or a string array, not a hashtable.' -f $Label)
+    }
     if (-not ($Value -is [string]) -and $Value -is [System.Collections.IEnumerable]) {
         foreach ($element in $Value) { ConvertTo-StringList -Value $element -Label $Label }
         return
@@ -1989,9 +1994,10 @@ function ConvertTo-StringList {
     }
 
     if ($text.StartsWith('[')) {
-        # PowerShell 7 reads an unterminated array ("[a" with no closing
-        # bracket) as its elements without an error, where Windows PowerShell
-        # throws; the check is made here so both editions refuse it.
+        # PowerShell 7 reads an array whose closing bracket is missing after a
+        # complete last element, such as ["a" or [1,2 with nothing after it,
+        # as its elements without an error, where Windows PowerShell throws;
+        # the check is made here so both editions refuse it.
         if (-not $text.EndsWith(']')) {
             throw ('{0} looks like a JSON array but does not parse: it does not end with "]".' -f $Label)
         }

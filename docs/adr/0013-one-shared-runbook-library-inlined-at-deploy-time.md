@@ -144,6 +144,7 @@ workstation run needs nothing but the repository.
   meant for hosts.
 - Every test runs offline. Locally that is Windows PowerShell 5.1 with the
   Pester 3.4.0 it ships; `.github/workflows/automation-tests.yml` runs the
-  same suite on `windows-latest` under both `powershell` (5.1) and `pwsh` (7)
-  with Pester 4.10.1, so the PowerShell 7 paths are covered by a test run on
-  every pull request that touches `automation/` or `scripts/`.
+  same suite on `windows-latest` three ways, `powershell` (5.1) with that
+  shipped 3.4.0, `powershell` with Pester 4.10.1, and `pwsh` (7) with Pester
+  4.10.1, so the PowerShell 7 paths and both Pester lines are covered by a
+  test run on every pull request that touches `automation/` or `scripts/`.

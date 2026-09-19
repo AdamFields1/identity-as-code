@@ -4,7 +4,8 @@
 # PowerShell 5.1 ships Pester 3.4.0. The runbook is dot-sourced, which loads
 # its functions without running it; the entry point checks for that. Every
 # Graph call goes through Invoke-GraphGetAll or Invoke-GraphRequest, and both
-# are mocked here, so nothing in this file touches a tenant.
+# are mocked here; the retry context also mocks Invoke-RestCall and Start-Sleep,
+# so nothing in this file touches a tenant or waits.
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $runbook = Join-Path -Path (Split-Path -Parent $here) -ChildPath 'runbooks\Invoke-AppCredentialHygiene.ps1'

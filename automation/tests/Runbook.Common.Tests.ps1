@@ -222,6 +222,22 @@ Describe 'Runbook.Common' {
             $message.Contains($graphToken) | Should Be $false
         }
 
+        It 'rejects a token object that lacks its closing brace, without echoing it' {
+            $bad = '{"Graph":"' + $graphToken + '"'
+            $message = ''
+            try { Start-TestRun -AccessToken $bad } catch { $message = $_.Exception.Message }
+            $message | Should Match 'not a JSON object'
+            $message.Contains($graphToken) | Should Be $false
+        }
+
+        It 'rejects a token object followed by trailing text, without echoing it' {
+            $bad = '{"Graph":"' + $graphToken + '"} // note'
+            $message = ''
+            try { Start-TestRun -AccessToken $bad } catch { $message = $_.Exception.Message }
+            $message | Should Match 'not a JSON object'
+            $message.Contains($graphToken) | Should Be $false
+        }
+
         It 'lets an explicit AccessToken argument override the run context' {
             Start-TestRun
             (Get-RunbookAccessToken -Resource Graph -AccessToken 'explicit-token-value-0000') | Should Be 'explicit-token-value-0000'
@@ -1125,6 +1141,10 @@ Describe 'Runbook.Common' {
         It 'rejects objects and nested arrays inside the JSON array' {
             { ConvertTo-StringList -Value '[{"a":1}]' -Label 'Scopes' } | Should Throw 'Scopes must be a JSON array of strings'
             { ConvertTo-StringList -Value '[["a"]]' } | Should Throw 'must be a JSON array of strings'
+        }
+
+        It 'rejects a hashtable with a clear message instead of recursing' {
+            { ConvertTo-StringList -Value @{ a = 1 } -Label 'Owners' } | Should Throw 'Owners must be a string or a string array'
         }
 
         It 'converts JSON numbers and skips JSON nulls' {

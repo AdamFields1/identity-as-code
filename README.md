@@ -222,7 +222,7 @@ identity-as-code/
         partition.hcl
         aws-identity-center/terragrunt.hcl
   .github/workflows/            PR validation and release trains: okta-* (dev -> prod), azure-* (corp, then its subscriptions -> subsidiary), aws-* (commercial, then its accounts -> govcloud,
-                                in the waves cells.py computes), plus automation-tests (Pester on 5.1 and 7) and repo-lint (the tool tests, repo_lint, and cells on every pull request)
+                                in the waves cells.py computes), plus automation-tests (the Pester suite on 5.1 with Pester 3.4.0 and 4.10.1, and on 7 with 4.10.1) and repo-lint (the tool tests, repo_lint, and cells on every pull request)
   scripts/                      PowerShell helpers to adopt an existing tenant, export drift, import live PIM eligibilities, and enforce the authentication methods policy
   tests/                        zero-change import gate: the rule; tools/plan_gate is the program
   tools/                        CI and repository tooling: Python 3.11+, standard library only, tested with pytest (docs/adr/0018)
@@ -742,8 +742,10 @@ with the runbooks' own parsers. All nine runbooks, the two libraries, and the
 scripts parse cleanly with the PowerShell language parser, and the full Pester
 suite (every HTTP call mocked) passes on Pester 3.4.0 under Windows PowerShell
 5.1 locally; `.github/workflows/automation-tests.yml` runs the same suite on
-`windows-latest` under Windows PowerShell 5.1 and PowerShell 7 with Pester
-4.10.1, which is where the PowerShell 7 paths are covered.
+`windows-latest` three ways, Windows PowerShell 5.1 with the shipped Pester
+3.4.0, Windows PowerShell 5.1 with Pester 4.10.1, and PowerShell 7 with Pester
+4.10.1, which is where the PowerShell 7 paths and the Pester 4 mock mechanics
+are covered.
 
 What a first live run should confirm, from the logged `Settings` line of the
 first dry job of each runbook and from its summary object:

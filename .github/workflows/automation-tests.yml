@@ -22,7 +22,8 @@
 # not evaluate expressions in a step's shell key (it is absent from the
 # context availability table), so shell: ${{ matrix.shell }} is read as the
 # literal name of a shell and the workflow file is rejected before any job
-# starts. The jobs are identical except for the shell and the Pester version.
+# starts. The jobs differ only in the shell, the Pester version, and whether
+# Pester has to be installed first.
 #
 # Invoke-Tests.ps1 parses every .ps1 under automation/ and scripts/ first and
 # fails the job before a single test runs if one of them does not parse. It

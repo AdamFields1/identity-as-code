@@ -757,8 +757,9 @@ patched, and an edit to the other library does not drag an unrelated tenant
 check into the pull request (ADR 0012).
 
 A third Azure workflow is not a release at all: `automation-tests` runs the
-Pester suite on `windows-latest` under Windows PowerShell 5.1 and PowerShell 7
-with Pester 4.10.1 for every pull request and push that touches `automation/`,
+Pester suite on `windows-latest` three ways (Windows PowerShell 5.1 with the
+shipped Pester 3.4.0, Windows PowerShell 5.1 with Pester 4.10.1, and PowerShell
+7 with Pester 4.10.1) for every pull request and push that touches `automation/`,
 `scripts/`, `policies/`, or `tenants/`. The last two are in the trigger because
 the suite asserts against them as well as against the code: the baseline tests
 read `policies/azure/pim-governance` and `policies/entra/pim-governance` and the

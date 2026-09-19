@@ -427,17 +427,17 @@ deliberate list:
 | Mocked | Where | Why |
 |--------|-------|-----|
 | `Invoke-HttpCore` | every library runbook and the library itself | the one `Invoke-WebRequest` call; a router answers each documented URL with the JSON shape the API reference documents |
-| `Start-Sleep` | every library runbook | retries and propagation waits, so a test of five attempts takes no minutes |
-| `Test-AzAccountsAvailable` | every library runbook and the library | keeps the token path off `Az.Accounts` when the module happens to be installed |
+| `Start-Sleep` | every library runbook, the library, and the app credential runbook | retries and propagation waits, so a test of five attempts takes no minutes |
+| `Test-AzAccountsAvailable` | every library runbook except the backup runbook, and the library | keeps the token path off `Az.Accounts` when the module happens to be installed |
 | `Invoke-WebRequest` | the library's own tests, and as a guard in three runbook tests | proves the identity endpoint call, or fails the test if anything reaches the network below the core |
 | `Connect-AzAccount`, `Get-AzContext`, `Get-AzAccessToken` | the library's tests only | the `Az.Accounts` fallback path |
 | `ConvertFrom-RunbookJsonText` | the library's tests only | to return the PowerShell 5.1 shape of a parsed JSON array on either edition |
-| `Get-AutomationVariable` (a global stand-in) and `$script:RunbookAutomationVariables` | Entra PIM drift, and the library | stands in for the Automation sandbox, which has no cmdlet outside a job |
+| `Get-AutomationVariable` (a global stand-in) and `$script:RunbookAutomationVariables` | Entra PIM drift, Azure PIM governance, and the library | stands in for the Automation sandbox, which has no cmdlet outside a job |
 | `Invoke-RunbookAction`, `Invoke-SubscriptionCancel` | subscription guard | to make one step throw and prove the `finally` block still removes the elevation |
 | `Export-PimDriftReport` | Entra PIM drift | to make the report write fail after everything else succeeded |
 | `Test-CircuitBreaker`, `ConvertFrom-Json` | job watcher | to trip the breaker on demand, and to return the PowerShell 7 date shapes |
-| `Invoke-GraphGetAll`, `Invoke-GraphRequest`, `Invoke-RestCall`, `Get-DesiredStateJson` | the first three runbooks, which predate the library | their own transport and desired-state seams |
-| `Invoke-ArmGetAll`, `Write-Host` | `scripts/Export-PimEligibilityImports.ps1` tests | its transport, and its console output |
+| `Invoke-GraphGetAll`, `Invoke-GraphRequest`, `Invoke-RestCall`, `Get-DesiredStateJson` | the first three runbooks, which predate the library, and the `scripts/Set-AuthenticationMethods.ps1` tests | their own transport and desired-state seams |
+| `Invoke-ArmGetAll`, `Invoke-GraphGetAll`, `Write-Host` | `scripts/Export-PimEligibilityImports.ps1` tests | its transport, and its console output |
 
 Everything else runs as it ships, and the clock is a parameter wherever a
 decision depends on it.

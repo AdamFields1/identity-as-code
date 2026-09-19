@@ -28,6 +28,9 @@ terragrunt-debug.tfvars.json
 tenants/**/imports.tf
 scripts/out/
 
+# Run output: the workflows and Invoke-Tests.ps1 -OutputPath write to an out/ folder
+out/
+
 # Python tooling under tools/ (docs/adr/0018)
 __pycache__/
 *.pyc

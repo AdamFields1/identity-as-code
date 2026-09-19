@@ -12,7 +12,7 @@
       2. The *.Tests.ps1 files in this directory run under Pester. The tests
          are written in the assertion syntax Pester 3 and 4 share ("Should Be",
          not "Should -Be"), because Windows PowerShell 5.1 ships Pester 3.4.0
-         and the pull request workflow installs 4.10.1.
+         and the workflow installs 4.10.1 in two of its three jobs.
 
     Which Pester is used, first match wins:
 
@@ -28,6 +28,11 @@
          PowerShell.
 
     Exit code is the number of failed tests, or 1 when parsing fails.
+
+    On GitHub Actions (GITHUB_ACTIONS is true) the runner also writes one
+    notice naming the PowerShell and Pester versions and the counts, and one
+    error annotation per failed test up to the ten a step can show, so the
+    run's summary page names what failed without opening the log.
 
 .PARAMETER OutputPath
     Optional NUnit XML results file, for a CI test report.
@@ -131,10 +136,19 @@ $result = Invoke-Pester @params
 # message's newlines become spaces and its percent signs are escaped.
 if ($env:GITHUB_ACTIONS -eq 'true') {
     Write-Output ('::notice title=Pester::Pester {0} on PowerShell {1} ({2}): {3} passed, {4} failed.' -f $pester.Version, $PSVersionTable.PSVersion, $PSVersionTable.PSEdition, $result.PassedCount, $result.FailedCount)
-    foreach ($test in @($result.TestResult | Where-Object { $_.Result -eq 'Failed' })) {
+    # GitHub shows at most ten error annotations per step, so the tenth line
+    # counts the rest instead of letting them drop without a trace.
+    $failed = @($result.TestResult | Where-Object { $_.Result -eq 'Failed' })
+    $shown = 0
+    foreach ($test in $failed) {
+        if ($shown -eq 9 -and $failed.Count -gt 10) {
+            Write-Output ('::error title=Pester::{0} more failed test(s) are not annotated; open the job log for the full list.' -f ($failed.Count - $shown))
+            break
+        }
         $message = (([string]$test.FailureMessage) -replace '%', '%25') -replace '\r?\n', ' '
         if ($message.Length -gt 400) { $message = $message.Substring(0, 400) }
         Write-Output ('::error title=Pester::{0} > {1} > {2}: {3}' -f $test.Describe, $test.Context, $test.Name, $message)
+        $shown++
     }
 }
 

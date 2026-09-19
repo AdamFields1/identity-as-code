@@ -6,7 +6,8 @@
 # the shared library from disk exactly as Terraform inlines it. The diff logic
 # itself is covered by Set-AuthenticationMethods.Tests.ps1; these tests cover
 # what the runbook adds: reading the desired state from Automation variables,
-# the digest, and the dry-run boundary. Nothing here touches a tenant.
+# the digest, and the dry-run boundary. Get-DesiredStateJson, Invoke-GraphGetAll,
+# and Invoke-GraphRequest are mocked, so nothing here touches a tenant.
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $here)
@@ -180,5 +181,8 @@ Describe 'Invoke-AuthenticationMethodsDrift method ids parsing' {
     }
     It 'rejects a value that is not an id' {
         { ConvertTo-MethodIdList -Value 'Fido2; not an id' } | Should Throw
+    }
+    It 'rejects an unterminated JSON array, which PowerShell 7 would otherwise read as its elements' {
+        { ConvertTo-MethodIdList -Value '["Fido2"' } | Should Throw 'MethodIds looks like a JSON array but does not parse'
     }
 }
