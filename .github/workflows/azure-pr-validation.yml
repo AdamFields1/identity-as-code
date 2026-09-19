@@ -1,5 +1,7 @@
 # PR validation for the Azure identity-as-code tree (tenants/azure, which holds
-# both the Azure RBAC/PIM cells and the Entra cells).
+# both the Azure RBAC/PIM cells and the Entra cells and, under
+# <tenant>/subscriptions/<sub-name>/, the subscription cells of the baseline,
+# the catalog, and the app stacks; docs/adr/0017).
 #
 # Static checks run on every PR that touches Terraform or Terragrunt under the
 # Azure and Entra paths. A speculative plan runs only for cells affected by the
@@ -16,6 +18,12 @@
 # that tenant's reader identity, so a PR plan can read RBAC and PIM but cannot
 # write. GitHub resolves vars.X to the environment value when one exists.
 #
+# A subscription cell plans with the same "<tenant>-plan" identity. Its
+# subscription comes from the subscription.hcl locator beside it, which
+# tenants/azure/root.hcl puts into the azurerm provider in place of
+# ARM_SUBSCRIPTION_ID; the reader identity needs the roles the stack README
+# lists at that subscription.
+#
 # Plans run one job per cell instead of a single `terragrunt run --all plan` so
 # each cell gets its own artifact, its own PR comment, and its own concurrency
 # group. The result is the same set of plans with better attribution.
@@ -30,6 +38,7 @@ on:
       - "modules/entra/**"
       - "stacks/azure-*/**"
       - "stacks/entra-*/**"
+      - "stacks/apps/azure/**"
       - "tenants/azure/**"
       - "automation/runbooks/**"
       - "automation/lib/**"
@@ -107,7 +116,7 @@ jobs:
       - name: terraform validate (modules and stacks)
         run: |
           set -euo pipefail
-          for dir in modules/azure/* modules/entra/* stacks/azure-* stacks/entra-*; do
+          for dir in modules/azure/* modules/entra/* stacks/azure-* stacks/entra-* stacks/apps/azure/*; do
             [ -d "$dir" ] || continue
             echo "::group::validate $dir"
             terraform -chdir="$dir" init -backend=false -input=false >/dev/null
@@ -135,17 +144,37 @@ jobs:
         run: |
           set -euo pipefail
           changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
-          # A cell is tenants/azure/<tenant>/<stack>. %P prints "corp/azure-rbac-roles".
-          all_cells=$(find tenants/azure -mindepth 2 -maxdepth 2 -type d -printf '%P\n' | sort)
+          # A cell is any directory under tenants/azure that holds a
+          # terragrunt.hcl, found by that file and never by depth
+          # (docs/adr/0017): corp/azure-rbac-roles is one, and so is
+          # corp/subscriptions/sub-example-prod/azure-subscription-baseline;
+          # subscriptions/ and subscriptions/<sub-name>/ hold a locator, not a
+          # cell. %P prints the path relative to tenants/azure.
+          all_cells=$(find tenants/azure -name terragrunt.hcl -printf '%P\n' | sed 's#/terragrunt\.hcl$##' | sort)
 
           # Runbook bodies, the library they inline, and every desired-state
           # file (the authentication methods policy and the two PIM baselines)
           # are published by the azure-automation stack, so an edit to any of
           # them is a shared-code change for planning purposes.
-          if echo "$changed" | grep -Eq '^(modules/(azure|entra)/|stacks/(azure|entra)-|automation/(runbooks|lib)/|policies/entra/authentication-methods/|policies/azure/pim-governance/|policies/entra/pim-governance/|tenants/azure/root\.hcl|\.github/workflows/azure-pr-validation\.yml)'; then
+          if echo "$changed" | grep -Eq '^(modules/(azure|entra)/|stacks/(azure|entra)-|stacks/apps/azure/|automation/(runbooks|lib)/|policies/entra/authentication-methods/|policies/azure/pim-governance/|policies/entra/pim-governance/|tenants/azure/root\.hcl|\.github/workflows/azure-pr-validation\.yml)'; then
             selected="$all_cells"
           else
-            selected=$(echo "$changed" | grep -E '^tenants/azure/[^/]+/[^/]+/' | cut -d/ -f3-4 | sort -u || true)
+            # A cell is affected when a file inside it changed, or when the
+            # subscription.hcl locator above it changed: the locator addresses
+            # every cell in the subscription, so an edited locator re-plans
+            # the cells it addresses.
+            affected() {
+              local cell="$1" dir="$1"
+              echo "$changed" | grep -Eq "^tenants/azure/${cell}/" && return 0
+              while dir=$(dirname "$dir") && [ "$dir" != "." ]; do
+                echo "$changed" | grep -Eq "^tenants/azure/${dir}/subscription\.hcl$" && return 0
+              done
+              return 1
+            }
+            selected=""
+            for cell in $all_cells; do
+              if affected "$cell"; then selected="$selected$cell"$'\n'; fi
+            done
           fi
 
           # The authentication methods policy is not a cell (docs/adr/0012); a
@@ -164,7 +193,7 @@ jobs:
 
           # Matrix entries carry the path, a filesystem-safe id for artifact and
           # concurrency names, and the tenant for the environment lookup.
-          json=$(printf '%s\n' $selected | grep -v '^$' \
+          json=$(printf '%s\n' $selected | { grep -v '^$' || true; } \
             | jq -R '{path: ., id: (. | gsub("/"; "-")), tenant: (. | split("/")[0])}' \
             | jq -sc .)
           echo "Affected cells: $json"

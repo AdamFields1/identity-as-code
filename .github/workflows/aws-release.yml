@@ -1,8 +1,14 @@
 # Release train for the AWS identity-as-code tree.
 #
 #   push to main
-#     |-- plan-commercial ---> apply-commercial
-#     |                               \
+#     |-- plan-commercial ---> apply-commercial   (commercial/aws-identity-center)
+#     |                               |
+#     |                               |-- example-prod: plan/apply aws-account-baseline
+#     |                               |       ---> plan/apply aws-account-workloads
+#     |                               |       ---> plan/apply payments-api
+#     |                               |-- example-dev:  plan/apply aws-account-baseline
+#     |                               |       ---> plan/apply aws-account-workloads
+#     |                                \
 #     |-- plan-govcloud (merge-time plan, saved as artifact)
 #                 \                     \
 #                  govcloud-gate (environment: govcloud, reviewers + wait timer)
@@ -15,6 +21,21 @@
 # and approval, Terraform refuses the stale plan and the release must be
 # re-run, which is the safe failure.
 #
+# Account cells (docs/adr/0017) follow the partition-wide Identity Center
+# cell, one chain per account, the accounts in parallel because their state
+# files and deployment roles are separate. Inside an account the order is
+# one rule for every account: aws-account-baseline, then
+# aws-account-workloads, then the app stacks under stacks/apps/aws. The
+# baseline goes first because it is what makes the account safe to put
+# things in (the trail, the public access block, the password policy); the
+# catalog goes second because it is where an application's account-level
+# prerequisites are declared when it has any; the app stacks go last. No
+# cell reads another cell's outputs, so the order is a release rule, not a
+# Terragrunt dependency, and it is stated once, here. The gate waits for the
+# last apply of every account, so commercial is complete before GovCloud
+# opens. GovCloud has no account cells yet; when it does, they follow
+# apply-govcloud in the same chain shape under the govcloud environments.
+#
 # The two partitions share nothing at runtime: different OIDC roles (a GovCloud
 # role ARN starts arn:aws-us-gov), different state buckets (a GovCloud identity
 # cannot write to a commercial bucket), different Identity Center instances.
@@ -22,16 +43,38 @@
 #
 # Credentials: AWS via GitHub OIDC (aws-actions/configure-aws-credentials with
 # a role ARN from a repository variable, no access keys). See docs/adr/0003.
+# An account cell's job additionally runs its provider as the deployment
+# role every account carries,
+# arn:<partition>:iam::<account id>:role/<TG_AWS_DEPLOY_ROLE_NAME>. That role
+# is in no generated file: tenants/aws/root.hcl gives an account cell's
+# provider profile = "identity-as-code-<account name>" and no assume_role,
+# because a saved plan carries the generated provider with it and the apply
+# job would otherwise assume the role the plan job named. The "Deployment
+# role profile" step in every account job writes that profile on the runner
+# from the locators beside the cell and the job environment's
+# TG_AWS_DEPLOY_ROLE_NAME, chained from the OIDC session with
+# credential_source = Environment, so the plan job runs as the reader and
+# the apply job as the writer while the plan file names neither. The state
+# backend keeps the OIDC session; the deployment roles never touch state.
 #
 # Environments (configured in repository settings, no secrets in this repo).
 # AWS_PLAN_ROLE_ARN, AWS_APPLY_ROLE_ARN, TG_AWS_STATE_BUCKET, TG_AWS_STATE_REGION,
-# and TG_AWS_LOCK_TABLE are repository variables that each environment
-# overrides with its own partition's role and bucket:
-#   commercial-plan    reader role in the commercial delegated admin account, plan only
-#   commercial         writer role in the commercial delegated admin account
+# TG_AWS_LOCK_TABLE, and TG_AWS_DEPLOY_ROLE_NAME are repository variables that
+# each environment overrides with its own partition's role and bucket:
+#   commercial-plan    reader role in the commercial delegated admin account, plan only;
+#                      TG_AWS_DEPLOY_ROLE_NAME names the read-only deployment role in
+#                      every account, which trusts only this environment's OIDC role
+#   commercial         writer role in the commercial delegated admin account;
+#                      TG_AWS_DEPLOY_ROLE_NAME names the writer deployment role in
+#                      every account, which trusts only this environment's OIDC role
 #   govcloud-plan      reader role in the GovCloud delegated admin account, plan only
 #   govcloud           no identity; carries the required reviewers and the wait timer
 #   govcloud-apply     writer role in the GovCloud delegated admin account; deployment branch policy: main only
+#
+# The reader deployment role trusting only the plan OIDC role, and the writer
+# only the apply OIDC role, is what keeps a pull request's plan from reaching
+# a writer anywhere in the estate. Both roles are platform bootstrap (README,
+# deliberately out of scope).
 #
 # The writer role lives in govcloud-apply rather than govcloud so the reviewer
 # approves once, at the gate. apply-govcloud cannot start without govcloud-gate
@@ -45,6 +88,7 @@ on:
     paths:
       - "modules/aws/**"
       - "stacks/aws-*/**"
+      - "stacks/apps/aws/**"
       - "tenants/aws/**"
       - ".github/workflows/aws-release.yml"
   workflow_dispatch:
@@ -155,6 +199,754 @@ jobs:
           terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/commercial-aws-identity-center.tfplan"
 
   # ---------------------------------------------------------------------------
+  plan-example-prod-baseline:
+    name: plan commercial/accounts/example-prod/aws-account-baseline
+    # First account cell of example-prod, after the partition-wide Identity
+    # Center cell. The provider runs as the read-only deployment role that
+    # TG_AWS_DEPLOY_ROLE_NAME names in the commercial-plan environment, in
+    # the account the locator beside the cell addresses (docs/adr/0017),
+    # through the profile the step below writes.
+    needs: [apply-commercial]
+    runs-on: ubuntu-latest
+    environment: commercial-plan
+    concurrency:
+      group: aws-cell-commercial-accounts-example-prod-aws-account-baseline
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+      TG_AWS_DEPLOY_ROLE_NAME: ${{ vars.TG_AWS_DEPLOY_ROLE_NAME || 'identity-as-code-deploy' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-plan-example-prod-baseline-${{ github.run_id }}
+      - name: Deployment role profile (from the cell's locators)
+        working-directory: tenants/aws/commercial/accounts/example-prod/aws-account-baseline
+        run: |
+          set -euo pipefail
+          # The root gives this cell's provider profile = "identity-as-code-<account_name>"
+          # and no assume_role (tenants/aws/root.hcl): a saved plan carries the
+          # generated provider with it, and the apply job names a different
+          # role than the plan job. This step fills that profile on the runner
+          # from the locators beside the cell and this environment's
+          # TG_AWS_DEPLOY_ROLE_NAME, chained from the OIDC session already in
+          # the environment. The state backend keeps the OIDC session; only
+          # the provider uses the profile. The last line proves the chain
+          # lands in the account the locator names before Terragrunt runs.
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
+            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            exit 1
+          fi
+          profile="identity-as-code-${account_name}"
+          aws configure set --profile "$profile" role_arn "arn:${partition}:iam::${account_id}:role/${TG_AWS_DEPLOY_ROLE_NAME}"
+          aws configure set --profile "$profile" credential_source Environment
+          aws configure set --profile "$profile" role_session_name "aws-release-${{ github.job }}-${{ github.run_id }}"
+          landed=$(aws sts get-caller-identity --profile "$profile" --query Account --output text)
+          if [ "$landed" != "$account_id" ]; then
+            echo "Profile $profile landed in account $landed, not $account_id."
+            exit 1
+          fi
+
+      - name: terragrunt plan
+        working-directory: tenants/aws/commercial/accounts/example-prod/aws-account-baseline
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/commercial-accounts-example-prod-aws-account-baseline.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/commercial-accounts-example-prod-aws-account-baseline.tfplan" > "$PLAN_DIR/commercial-accounts-example-prod-aws-account-baseline.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aws-plan-commercial-accounts-example-prod-aws-account-baseline-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/commercial-accounts-example-prod-aws-account-baseline.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-example-prod-baseline:
+    name: apply commercial/accounts/example-prod/aws-account-baseline
+    needs: [plan-example-prod-baseline]
+    runs-on: ubuntu-latest
+    environment: commercial
+    concurrency:
+      group: aws-cell-commercial-accounts-example-prod-aws-account-baseline
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+      TG_AWS_DEPLOY_ROLE_NAME: ${{ vars.TG_AWS_DEPLOY_ROLE_NAME || 'identity-as-code-deploy' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-apply-example-prod-baseline-${{ github.run_id }}
+      - name: Deployment role profile (from the cell's locators)
+        working-directory: tenants/aws/commercial/accounts/example-prod/aws-account-baseline
+        run: |
+          set -euo pipefail
+          # The root gives this cell's provider profile = "identity-as-code-<account_name>"
+          # and no assume_role (tenants/aws/root.hcl): a saved plan carries the
+          # generated provider with it, and the apply job names a different
+          # role than the plan job. This step fills that profile on the runner
+          # from the locators beside the cell and this environment's
+          # TG_AWS_DEPLOY_ROLE_NAME, chained from the OIDC session already in
+          # the environment. The state backend keeps the OIDC session; only
+          # the provider uses the profile. The last line proves the chain
+          # lands in the account the locator names before Terragrunt runs.
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
+            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            exit 1
+          fi
+          profile="identity-as-code-${account_name}"
+          aws configure set --profile "$profile" role_arn "arn:${partition}:iam::${account_id}:role/${TG_AWS_DEPLOY_ROLE_NAME}"
+          aws configure set --profile "$profile" credential_source Environment
+          aws configure set --profile "$profile" role_session_name "aws-release-${{ github.job }}-${{ github.run_id }}"
+          landed=$(aws sts get-caller-identity --profile "$profile" --query Account --output text)
+          if [ "$landed" != "$account_id" ]; then
+            echo "Profile $profile landed in account $landed, not $account_id."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: aws-plan-commercial-accounts-example-prod-aws-account-baseline-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/aws/commercial/accounts/example-prod/aws-account-baseline
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/commercial-accounts-example-prod-aws-account-baseline.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-example-prod-workloads:
+    name: plan commercial/accounts/example-prod/aws-account-workloads
+    # After the baseline of the same account: the account is hardened before
+    # anything is put in it. Nothing is resolved from the baseline cell.
+    needs: [apply-example-prod-baseline]
+    runs-on: ubuntu-latest
+    environment: commercial-plan
+    concurrency:
+      group: aws-cell-commercial-accounts-example-prod-aws-account-workloads
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+      TG_AWS_DEPLOY_ROLE_NAME: ${{ vars.TG_AWS_DEPLOY_ROLE_NAME || 'identity-as-code-deploy' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-plan-example-prod-workloads-${{ github.run_id }}
+      - name: Deployment role profile (from the cell's locators)
+        working-directory: tenants/aws/commercial/accounts/example-prod/aws-account-workloads
+        run: |
+          set -euo pipefail
+          # The root gives this cell's provider profile = "identity-as-code-<account_name>"
+          # and no assume_role (tenants/aws/root.hcl): a saved plan carries the
+          # generated provider with it, and the apply job names a different
+          # role than the plan job. This step fills that profile on the runner
+          # from the locators beside the cell and this environment's
+          # TG_AWS_DEPLOY_ROLE_NAME, chained from the OIDC session already in
+          # the environment. The state backend keeps the OIDC session; only
+          # the provider uses the profile. The last line proves the chain
+          # lands in the account the locator names before Terragrunt runs.
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
+            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            exit 1
+          fi
+          profile="identity-as-code-${account_name}"
+          aws configure set --profile "$profile" role_arn "arn:${partition}:iam::${account_id}:role/${TG_AWS_DEPLOY_ROLE_NAME}"
+          aws configure set --profile "$profile" credential_source Environment
+          aws configure set --profile "$profile" role_session_name "aws-release-${{ github.job }}-${{ github.run_id }}"
+          landed=$(aws sts get-caller-identity --profile "$profile" --query Account --output text)
+          if [ "$landed" != "$account_id" ]; then
+            echo "Profile $profile landed in account $landed, not $account_id."
+            exit 1
+          fi
+
+      - name: terragrunt plan
+        working-directory: tenants/aws/commercial/accounts/example-prod/aws-account-workloads
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/commercial-accounts-example-prod-aws-account-workloads.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/commercial-accounts-example-prod-aws-account-workloads.tfplan" > "$PLAN_DIR/commercial-accounts-example-prod-aws-account-workloads.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aws-plan-commercial-accounts-example-prod-aws-account-workloads-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/commercial-accounts-example-prod-aws-account-workloads.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-example-prod-workloads:
+    name: apply commercial/accounts/example-prod/aws-account-workloads
+    needs: [plan-example-prod-workloads]
+    runs-on: ubuntu-latest
+    environment: commercial
+    concurrency:
+      group: aws-cell-commercial-accounts-example-prod-aws-account-workloads
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+      TG_AWS_DEPLOY_ROLE_NAME: ${{ vars.TG_AWS_DEPLOY_ROLE_NAME || 'identity-as-code-deploy' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-apply-example-prod-workloads-${{ github.run_id }}
+      - name: Deployment role profile (from the cell's locators)
+        working-directory: tenants/aws/commercial/accounts/example-prod/aws-account-workloads
+        run: |
+          set -euo pipefail
+          # The root gives this cell's provider profile = "identity-as-code-<account_name>"
+          # and no assume_role (tenants/aws/root.hcl): a saved plan carries the
+          # generated provider with it, and the apply job names a different
+          # role than the plan job. This step fills that profile on the runner
+          # from the locators beside the cell and this environment's
+          # TG_AWS_DEPLOY_ROLE_NAME, chained from the OIDC session already in
+          # the environment. The state backend keeps the OIDC session; only
+          # the provider uses the profile. The last line proves the chain
+          # lands in the account the locator names before Terragrunt runs.
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
+            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            exit 1
+          fi
+          profile="identity-as-code-${account_name}"
+          aws configure set --profile "$profile" role_arn "arn:${partition}:iam::${account_id}:role/${TG_AWS_DEPLOY_ROLE_NAME}"
+          aws configure set --profile "$profile" credential_source Environment
+          aws configure set --profile "$profile" role_session_name "aws-release-${{ github.job }}-${{ github.run_id }}"
+          landed=$(aws sts get-caller-identity --profile "$profile" --query Account --output text)
+          if [ "$landed" != "$account_id" ]; then
+            echo "Profile $profile landed in account $landed, not $account_id."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: aws-plan-commercial-accounts-example-prod-aws-account-workloads-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/aws/commercial/accounts/example-prod/aws-account-workloads
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/commercial-accounts-example-prod-aws-account-workloads.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-example-prod-payments-api:
+    name: plan commercial/accounts/example-prod/payments-api
+    # App stacks are last in an account, after the catalog. Nothing here is
+    # resolved from the catalog cell; the order is the release rule.
+    needs: [apply-example-prod-workloads]
+    runs-on: ubuntu-latest
+    environment: commercial-plan
+    concurrency:
+      group: aws-cell-commercial-accounts-example-prod-payments-api
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+      TG_AWS_DEPLOY_ROLE_NAME: ${{ vars.TG_AWS_DEPLOY_ROLE_NAME || 'identity-as-code-deploy' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-plan-example-prod-payments-api-${{ github.run_id }}
+      - name: Deployment role profile (from the cell's locators)
+        working-directory: tenants/aws/commercial/accounts/example-prod/payments-api
+        run: |
+          set -euo pipefail
+          # The root gives this cell's provider profile = "identity-as-code-<account_name>"
+          # and no assume_role (tenants/aws/root.hcl): a saved plan carries the
+          # generated provider with it, and the apply job names a different
+          # role than the plan job. This step fills that profile on the runner
+          # from the locators beside the cell and this environment's
+          # TG_AWS_DEPLOY_ROLE_NAME, chained from the OIDC session already in
+          # the environment. The state backend keeps the OIDC session; only
+          # the provider uses the profile. The last line proves the chain
+          # lands in the account the locator names before Terragrunt runs.
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
+            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            exit 1
+          fi
+          profile="identity-as-code-${account_name}"
+          aws configure set --profile "$profile" role_arn "arn:${partition}:iam::${account_id}:role/${TG_AWS_DEPLOY_ROLE_NAME}"
+          aws configure set --profile "$profile" credential_source Environment
+          aws configure set --profile "$profile" role_session_name "aws-release-${{ github.job }}-${{ github.run_id }}"
+          landed=$(aws sts get-caller-identity --profile "$profile" --query Account --output text)
+          if [ "$landed" != "$account_id" ]; then
+            echo "Profile $profile landed in account $landed, not $account_id."
+            exit 1
+          fi
+
+      - name: terragrunt plan
+        working-directory: tenants/aws/commercial/accounts/example-prod/payments-api
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/commercial-accounts-example-prod-payments-api.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/commercial-accounts-example-prod-payments-api.tfplan" > "$PLAN_DIR/commercial-accounts-example-prod-payments-api.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aws-plan-commercial-accounts-example-prod-payments-api-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/commercial-accounts-example-prod-payments-api.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-example-prod-payments-api:
+    name: apply commercial/accounts/example-prod/payments-api
+    needs: [plan-example-prod-payments-api]
+    runs-on: ubuntu-latest
+    environment: commercial
+    concurrency:
+      group: aws-cell-commercial-accounts-example-prod-payments-api
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+      TG_AWS_DEPLOY_ROLE_NAME: ${{ vars.TG_AWS_DEPLOY_ROLE_NAME || 'identity-as-code-deploy' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-apply-example-prod-payments-api-${{ github.run_id }}
+      - name: Deployment role profile (from the cell's locators)
+        working-directory: tenants/aws/commercial/accounts/example-prod/payments-api
+        run: |
+          set -euo pipefail
+          # The root gives this cell's provider profile = "identity-as-code-<account_name>"
+          # and no assume_role (tenants/aws/root.hcl): a saved plan carries the
+          # generated provider with it, and the apply job names a different
+          # role than the plan job. This step fills that profile on the runner
+          # from the locators beside the cell and this environment's
+          # TG_AWS_DEPLOY_ROLE_NAME, chained from the OIDC session already in
+          # the environment. The state backend keeps the OIDC session; only
+          # the provider uses the profile. The last line proves the chain
+          # lands in the account the locator names before Terragrunt runs.
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
+            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            exit 1
+          fi
+          profile="identity-as-code-${account_name}"
+          aws configure set --profile "$profile" role_arn "arn:${partition}:iam::${account_id}:role/${TG_AWS_DEPLOY_ROLE_NAME}"
+          aws configure set --profile "$profile" credential_source Environment
+          aws configure set --profile "$profile" role_session_name "aws-release-${{ github.job }}-${{ github.run_id }}"
+          landed=$(aws sts get-caller-identity --profile "$profile" --query Account --output text)
+          if [ "$landed" != "$account_id" ]; then
+            echo "Profile $profile landed in account $landed, not $account_id."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: aws-plan-commercial-accounts-example-prod-payments-api-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/aws/commercial/accounts/example-prod/payments-api
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/commercial-accounts-example-prod-payments-api.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-example-dev-baseline:
+    name: plan commercial/accounts/example-dev/aws-account-baseline
+    # example-dev runs its own chain beside example-prod: separate state
+    # files, separate deployment role, no ordering between accounts.
+    needs: [apply-commercial]
+    runs-on: ubuntu-latest
+    environment: commercial-plan
+    concurrency:
+      group: aws-cell-commercial-accounts-example-dev-aws-account-baseline
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+      TG_AWS_DEPLOY_ROLE_NAME: ${{ vars.TG_AWS_DEPLOY_ROLE_NAME || 'identity-as-code-deploy' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-plan-example-dev-baseline-${{ github.run_id }}
+      - name: Deployment role profile (from the cell's locators)
+        working-directory: tenants/aws/commercial/accounts/example-dev/aws-account-baseline
+        run: |
+          set -euo pipefail
+          # The root gives this cell's provider profile = "identity-as-code-<account_name>"
+          # and no assume_role (tenants/aws/root.hcl): a saved plan carries the
+          # generated provider with it, and the apply job names a different
+          # role than the plan job. This step fills that profile on the runner
+          # from the locators beside the cell and this environment's
+          # TG_AWS_DEPLOY_ROLE_NAME, chained from the OIDC session already in
+          # the environment. The state backend keeps the OIDC session; only
+          # the provider uses the profile. The last line proves the chain
+          # lands in the account the locator names before Terragrunt runs.
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
+            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            exit 1
+          fi
+          profile="identity-as-code-${account_name}"
+          aws configure set --profile "$profile" role_arn "arn:${partition}:iam::${account_id}:role/${TG_AWS_DEPLOY_ROLE_NAME}"
+          aws configure set --profile "$profile" credential_source Environment
+          aws configure set --profile "$profile" role_session_name "aws-release-${{ github.job }}-${{ github.run_id }}"
+          landed=$(aws sts get-caller-identity --profile "$profile" --query Account --output text)
+          if [ "$landed" != "$account_id" ]; then
+            echo "Profile $profile landed in account $landed, not $account_id."
+            exit 1
+          fi
+
+      - name: terragrunt plan
+        working-directory: tenants/aws/commercial/accounts/example-dev/aws-account-baseline
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/commercial-accounts-example-dev-aws-account-baseline.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/commercial-accounts-example-dev-aws-account-baseline.tfplan" > "$PLAN_DIR/commercial-accounts-example-dev-aws-account-baseline.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aws-plan-commercial-accounts-example-dev-aws-account-baseline-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/commercial-accounts-example-dev-aws-account-baseline.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-example-dev-baseline:
+    name: apply commercial/accounts/example-dev/aws-account-baseline
+    needs: [plan-example-dev-baseline]
+    runs-on: ubuntu-latest
+    environment: commercial
+    concurrency:
+      group: aws-cell-commercial-accounts-example-dev-aws-account-baseline
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+      TG_AWS_DEPLOY_ROLE_NAME: ${{ vars.TG_AWS_DEPLOY_ROLE_NAME || 'identity-as-code-deploy' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-apply-example-dev-baseline-${{ github.run_id }}
+      - name: Deployment role profile (from the cell's locators)
+        working-directory: tenants/aws/commercial/accounts/example-dev/aws-account-baseline
+        run: |
+          set -euo pipefail
+          # The root gives this cell's provider profile = "identity-as-code-<account_name>"
+          # and no assume_role (tenants/aws/root.hcl): a saved plan carries the
+          # generated provider with it, and the apply job names a different
+          # role than the plan job. This step fills that profile on the runner
+          # from the locators beside the cell and this environment's
+          # TG_AWS_DEPLOY_ROLE_NAME, chained from the OIDC session already in
+          # the environment. The state backend keeps the OIDC session; only
+          # the provider uses the profile. The last line proves the chain
+          # lands in the account the locator names before Terragrunt runs.
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
+            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            exit 1
+          fi
+          profile="identity-as-code-${account_name}"
+          aws configure set --profile "$profile" role_arn "arn:${partition}:iam::${account_id}:role/${TG_AWS_DEPLOY_ROLE_NAME}"
+          aws configure set --profile "$profile" credential_source Environment
+          aws configure set --profile "$profile" role_session_name "aws-release-${{ github.job }}-${{ github.run_id }}"
+          landed=$(aws sts get-caller-identity --profile "$profile" --query Account --output text)
+          if [ "$landed" != "$account_id" ]; then
+            echo "Profile $profile landed in account $landed, not $account_id."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: aws-plan-commercial-accounts-example-dev-aws-account-baseline-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/aws/commercial/accounts/example-dev/aws-account-baseline
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/commercial-accounts-example-dev-aws-account-baseline.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-example-dev-workloads:
+    name: plan commercial/accounts/example-dev/aws-account-workloads
+    # After the baseline of the same account. example-dev has no app stack
+    # cell, so this is the last apply of the account.
+    needs: [apply-example-dev-baseline]
+    runs-on: ubuntu-latest
+    environment: commercial-plan
+    concurrency:
+      group: aws-cell-commercial-accounts-example-dev-aws-account-workloads
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+      TG_AWS_DEPLOY_ROLE_NAME: ${{ vars.TG_AWS_DEPLOY_ROLE_NAME || 'identity-as-code-deploy' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-plan-example-dev-workloads-${{ github.run_id }}
+      - name: Deployment role profile (from the cell's locators)
+        working-directory: tenants/aws/commercial/accounts/example-dev/aws-account-workloads
+        run: |
+          set -euo pipefail
+          # The root gives this cell's provider profile = "identity-as-code-<account_name>"
+          # and no assume_role (tenants/aws/root.hcl): a saved plan carries the
+          # generated provider with it, and the apply job names a different
+          # role than the plan job. This step fills that profile on the runner
+          # from the locators beside the cell and this environment's
+          # TG_AWS_DEPLOY_ROLE_NAME, chained from the OIDC session already in
+          # the environment. The state backend keeps the OIDC session; only
+          # the provider uses the profile. The last line proves the chain
+          # lands in the account the locator names before Terragrunt runs.
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
+            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            exit 1
+          fi
+          profile="identity-as-code-${account_name}"
+          aws configure set --profile "$profile" role_arn "arn:${partition}:iam::${account_id}:role/${TG_AWS_DEPLOY_ROLE_NAME}"
+          aws configure set --profile "$profile" credential_source Environment
+          aws configure set --profile "$profile" role_session_name "aws-release-${{ github.job }}-${{ github.run_id }}"
+          landed=$(aws sts get-caller-identity --profile "$profile" --query Account --output text)
+          if [ "$landed" != "$account_id" ]; then
+            echo "Profile $profile landed in account $landed, not $account_id."
+            exit 1
+          fi
+
+      - name: terragrunt plan
+        working-directory: tenants/aws/commercial/accounts/example-dev/aws-account-workloads
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/commercial-accounts-example-dev-aws-account-workloads.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/commercial-accounts-example-dev-aws-account-workloads.tfplan" > "$PLAN_DIR/commercial-accounts-example-dev-aws-account-workloads.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aws-plan-commercial-accounts-example-dev-aws-account-workloads-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/commercial-accounts-example-dev-aws-account-workloads.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-example-dev-workloads:
+    name: apply commercial/accounts/example-dev/aws-account-workloads
+    needs: [plan-example-dev-workloads]
+    runs-on: ubuntu-latest
+    environment: commercial
+    concurrency:
+      group: aws-cell-commercial-accounts-example-dev-aws-account-workloads
+      cancel-in-progress: false
+    env:
+      TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
+      TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
+      TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+      TG_AWS_DEPLOY_ROLE_NAME: ${{ vars.TG_AWS_DEPLOY_ROLE_NAME || 'identity-as-code-deploy' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_AWS_STATE_REGION }}
+          role-session-name: aws-release-apply-example-dev-workloads-${{ github.run_id }}
+      - name: Deployment role profile (from the cell's locators)
+        working-directory: tenants/aws/commercial/accounts/example-dev/aws-account-workloads
+        run: |
+          set -euo pipefail
+          # The root gives this cell's provider profile = "identity-as-code-<account_name>"
+          # and no assume_role (tenants/aws/root.hcl): a saved plan carries the
+          # generated provider with it, and the apply job names a different
+          # role than the plan job. This step fills that profile on the runner
+          # from the locators beside the cell and this environment's
+          # TG_AWS_DEPLOY_ROLE_NAME, chained from the OIDC session already in
+          # the environment. The state backend keeps the OIDC session; only
+          # the provider uses the profile. The last line proves the chain
+          # lands in the account the locator names before Terragrunt runs.
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
+            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            exit 1
+          fi
+          profile="identity-as-code-${account_name}"
+          aws configure set --profile "$profile" role_arn "arn:${partition}:iam::${account_id}:role/${TG_AWS_DEPLOY_ROLE_NAME}"
+          aws configure set --profile "$profile" credential_source Environment
+          aws configure set --profile "$profile" role_session_name "aws-release-${{ github.job }}-${{ github.run_id }}"
+          landed=$(aws sts get-caller-identity --profile "$profile" --query Account --output text)
+          if [ "$landed" != "$account_id" ]; then
+            echo "Profile $profile landed in account $landed, not $account_id."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: aws-plan-commercial-accounts-example-dev-aws-account-workloads-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/aws/commercial/accounts/example-dev/aws-account-workloads
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/commercial-accounts-example-dev-aws-account-workloads.tfplan"
+
+  # ---------------------------------------------------------------------------
   plan-govcloud:
     name: plan govcloud/aws-identity-center (merge-time)
     # Same backend guard as plan-commercial; this job has no needs, so it must
@@ -218,7 +1010,7 @@ jobs:
   # ---------------------------------------------------------------------------
   govcloud-gate:
     name: gate (govcloud)
-    needs: [apply-commercial, plan-govcloud]
+    needs: [apply-commercial, apply-example-prod-payments-api, apply-example-dev-workloads, plan-govcloud]
     runs-on: ubuntu-latest
     # The "govcloud" environment carries required reviewers and a wait timer
     # (Settings -> Environments -> govcloud -> Deployment protection rules).
@@ -238,7 +1030,11 @@ jobs:
                "Provisioned", not "Failed".
             3. No group referenced by the commercial cell is missing from the identity
                store (SCIM from the corp Entra tenant is healthy).
-            4. The GovCloud plan artifact (aws-plan-govcloud-aws-identity-center-<sha>)
+            4. Every commercial account cell applied cleanly: in example-prod the trail
+               is delivering to its bucket and GuardDuty is enabled, and in each
+               account the roles, keys, and buckets of the workloads cell exist with
+               the policies the plan showed.
+            5. The GovCloud plan artifact (aws-plan-govcloud-aws-identity-center-<sha>)
                shows the expected change set and no destroys you did not intend.
           EOF
       - name: Documented wait

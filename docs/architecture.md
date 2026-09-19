@@ -28,10 +28,22 @@ flowchart LR
       ARB[automation-runbooks]
       AWR[workload-role-assignment]
       ABS[backup-storage]
+      ARG[resource-group]
+      AMI[managed-identity]
+      AKV[key-vault]
+      AST[storage-account]
+      ASB[subscription-baseline]
     end
     subgraph maws["modules/aws"]
       WPS[permission-set]
       WAA[account-assignment]
+      WSR[iam-service-role]
+      WKK[kms-key]
+      WS3[s3-bucket]
+      WAH[account-hardening]
+      WCT[cloudtrail]
+      WLG[log-group]
+      WPN[ssm-parameter-namespace]
     end
   end
 
@@ -45,6 +57,12 @@ flowchart LR
     SAP[azure-pim-governance]
     SAA[azure-automation]
     SWI[aws-identity-center]
+    SAB[aws-account-baseline]
+    SAW[aws-account-workloads]
+    SPA["apps/aws/payments-api"]
+    SSB[azure-subscription-baseline]
+    SSW[azure-subscription-workloads]
+    SDP["apps/azure/data-pipeline"]
   end
 
   subgraph runbooks["automation/runbooks (PowerShell, published by the stack)"]
@@ -74,16 +92,21 @@ flowchart LR
     PROD[prod]
   end
 
-  subgraph tazure["tenants/azure (values only, one cell per stack)"]
+  subgraph tazure["tenants/azure (values only, one cell per stack; one per subscription under subscriptions/)"]
     RA[root.hcl]
     CORP[corp/*]
     SUB[subsidiary/*]
+    SLOC["corp/subscriptions/sub-example-prod/subscription.hcl\n(locator, not a cell)"]
+    CSUB["corp/subscriptions/sub-example-prod/*"]
   end
 
-  subgraph taws["tenants/aws (values only, one cell per partition)"]
+  subgraph taws["tenants/aws (values only, one cell per partition; one per account under accounts/)"]
     RW[root.hcl]
+    PLOC["commercial/partition.hcl\ngovcloud/partition.hcl\n(locators, not cells)"]
     COMM[commercial/*]
     GOVC[govcloud/*]
+    ALOC["commercial/accounts/example-prod/account.hcl\ncommercial/accounts/example-dev/account.hcl\n(locators, not cells)"]
+    ACCT["commercial/accounts/*/*"]
   end
 
   subgraph pipelines[".github/workflows"]
@@ -131,6 +154,29 @@ flowchart LR
   PBE -.variable PimPolicy_EntraBaseline.-> SAA
   WPS --> SWI
   WAA --> SWI
+  WSR --> SAW
+  WKK --> SAW
+  WS3 --> SAW
+  WSR --> SPA
+  WKK --> SPA
+  WS3 --> SPA
+  WLG --> SPA
+  WPN --> SPA
+  WAH --> SAB
+  WKK --> SAB
+  WS3 --> SAB
+  WCT --> SAB
+  ARG --> SSB
+  ASB --> SSB
+  ARG --> SSW
+  AMI --> SSW
+  AKV --> SSW
+  AST --> SSW
+  ARG --> SDP
+  AMI --> SDP
+  AKV --> SDP
+  AST --> SDP
+  AWR --> SDP
 
   SO --> DEV
   SO --> PROD
@@ -146,6 +192,12 @@ flowchart LR
   SAP --> SUB
   SWI --> COMM
   SWI --> GOVC
+  SAB --> ACCT
+  SAW --> ACCT
+  SPA --> ACCT
+  SSB --> CSUB
+  SSW --> CSUB
+  SDP --> CSUB
 
   RO -.include.-> DEV
   RO -.include.-> PROD
@@ -153,6 +205,13 @@ flowchart LR
   RA -.include.-> SUB
   RW -.include.-> COMM
   RW -.include.-> GOVC
+  RA -.include.-> CSUB
+  RW -.include.-> ACCT
+  SLOC -.read by root.hcl for subscription_id.-> CSUB
+  PLOC -.read by root.hcl for region and partition.-> COMM
+  PLOC -.read by root.hcl for region and partition.-> GOVC
+  PLOC -.read by root.hcl for region and partition.-> ACCT
+  ALOC -.read by root.hcl for allowed_account_ids and the account profile.-> ACCT
 
   DEV --> OPR
   PROD --> OPR
@@ -168,6 +227,10 @@ flowchart LR
   GOVC --> WPR
   COMM --> WREL
   GOVC --> WREL
+  CSUB --> APR
+  CSUB --> AREL
+  ACCT --> WPR
+  ACCT --> WREL
 ```
 
 Dependencies only point one way. Modules know nothing about stacks. Stacks know
@@ -214,6 +277,30 @@ Automation service may parse JSON-looking parameter text before it binds it:
 the schedule carries the variable's name and the runbook reads the variable
 (ADR 0015). Nothing under `policies/` is state; the live tenant is compared
 with the files every time.
+
+The locator files are a sixth kind, and the only one the cells never see.
+`partition.hcl`, `account.hcl`, and `subscription.hcl` are not cells (no
+include, no source, no inputs; Terragrunt never runs them) and not values (no
+cell reads them); they are addressing. Each `root.hcl` finds the locators
+above the cell it is planning with `find_in_parent_folders` and turns them
+into provider configuration: the AWS root generates `allowed_account_ids`
+and `profile = "identity-as-code-<account name>"`, and supplies `region`;
+the deployment role `arn:<partition>:iam::<account id>:role/<TG_AWS_DEPLOY_ROLE_NAME>`
+is named in that profile on the runner, never in the generated file,
+because a saved plan carries the file and the plan and apply environments
+name different roles. The Azure root puts the locator's `subscription_id`
+into the `azurerm` provider in place of `ARM_SUBSCRIPTION_ID`. A malformed
+locator, or one whose name does not match its directory, fails
+`terragrunt init`. The cells under `accounts/` and `subscriptions/` are the
+same three blocks as every other cell, and the stacks they point at come in
+three kinds: the shared platform stacks, the catalogs
+(`aws-account-workloads`, `azure-subscription-workloads`) that offer vetted
+shapes as values, and the app stacks under `stacks/apps` that hold one
+application's composition (ADR 0017). The diagram shows `sub-example-prod`
+and the two commercial accounts; a new account or subscription is a directory
+with a locator, and the pull request workflows find cells by the presence of
+`terragrunt.hcl`, not by depth; a new cell also needs its plan and apply
+jobs added to the release train, which lists cells explicitly.
 
 ## Inside the stack
 
@@ -533,6 +620,11 @@ key = "azure/${path_relative_to_include()}/terraform.tfstate"
 | `tenants/azure/corp/azure-automation` | `azure/corp/azure-automation/terraform.tfstate` |
 | `tenants/azure/corp/entra-conditional-access` | `azure/corp/entra-conditional-access/terraform.tfstate` |
 | `tenants/azure/subsidiary/azure-pim-governance` | `azure/subsidiary/azure-pim-governance/terraform.tfstate` |
+| `tenants/azure/corp/subscriptions/sub-example-prod/azure-subscription-baseline` | `azure/corp/subscriptions/sub-example-prod/azure-subscription-baseline/terraform.tfstate` |
+| `tenants/azure/corp/subscriptions/sub-example-prod/data-pipeline` | `azure/corp/subscriptions/sub-example-prod/data-pipeline/terraform.tfstate` |
+
+The `subscription.hcl` locator beside a subscription cell plays no part in
+the key: the key is the path, and the locator only addresses the provider.
 
 Resource group, storage account, and container are `TG_AZ_STATE_RG`,
 `TG_AZ_STATE_SA`, and `TG_AZ_STATE_CONTAINER`. The backend authenticates with the
@@ -550,6 +642,11 @@ key = "aws/${path_relative_to_include()}/terraform.tfstate"
 |----------------|-----------|--------|
 | `tenants/aws/commercial/aws-identity-center` | `aws/commercial/aws-identity-center/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
 | `tenants/aws/govcloud/aws-identity-center` | `aws/govcloud/aws-identity-center/terraform.tfstate` | GovCloud `TG_AWS_STATE_BUCKET` |
+| `tenants/aws/commercial/accounts/example-prod/aws-account-baseline` | `aws/commercial/accounts/example-prod/aws-account-baseline/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
+| `tenants/aws/commercial/accounts/example-prod/payments-api` | `aws/commercial/accounts/example-prod/payments-api/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
+
+`partition.hcl` and `account.hcl` play no part in the key either; an account
+cell's state sits under the account's directory because the path does.
 
 `TG_AWS_STATE_BUCKET`, `TG_AWS_STATE_REGION`, and `TG_AWS_LOCK_TABLE` are set per
 GitHub environment, because a GovCloud identity cannot reach a commercial bucket
@@ -648,6 +745,18 @@ cell on the Azure side is not in any release train yet: the Azure workflows do
 not map the SCIM credentials into `TF_VAR_scim_credentials`, and until they do
 that cell is applied from a workstation (ADR 0008).
 
+Both trains carry the account and subscription cells after the tenant-wide
+ones. `aws-release` applies the commercial account cells after the Identity
+Center cell, one chain per account and the accounts in parallel:
+`aws-account-baseline`, then `aws-account-workloads`, then the app stacks,
+and the GovCloud gate waits for the last apply of every account.
+`azure-release` applies the corp subscription cells after the corp tenant
+cells: `azure-subscription-baseline` first, because the other cells name the
+workspace it creates, then `azure-subscription-workloads` and `data-pipeline`
+side by side, and the subsidiary gate waits for both. The pull request
+workflows find cells by the presence of `terragrunt.hcl` at any depth, and a
+change to a locator re-plans every cell it addresses.
+
 ## Secrets and identity in CI
 
 | Need | Mechanism | Lifetime |
@@ -657,6 +766,7 @@ that cell is applied from a workstation (ADR 0008).
 | Read/write state in Azure Storage | GitHub OIDC -> `azure/login@v2` -> federated credential on an app or user-assigned identity; backend uses the Entra token (`use_azuread_auth`) | About an hour |
 | Talk to Azure Resource Manager and Microsoft Graph | Same federated identity; `ARM_USE_OIDC=true` lets the providers do the token exchange themselves | About an hour |
 | Read/write state in S3 and talk to Identity Center, per partition | GitHub OIDC -> `aws-actions/configure-aws-credentials` -> role from the partition's environment variables (`AWS_PLAN_ROLE_ARN`, `AWS_APPLY_ROLE_ARN`) | Minutes |
+| Plan and apply in one AWS account | The workflow writes a shared config profile `identity-as-code-<account name>` on the runner from the locators beside the cell, with `role_arn` = `arn:<partition>:iam::<account id>:role/<TG_AWS_DEPLOY_ROLE_NAME>` and `credential_source = Environment`; the provider block `tenants/aws/root.hcl` generates names that profile and no role, so the plan file carries neither; the plan environments name a read-only role trusted only by the plan OIDC role, the apply environments a writer trusted only by the apply OIDC role; the state backend keeps the OIDC session | Minutes |
 | Provision users and groups into Identity Center | SCIM endpoint and token issued by the AWS console, held as a GitHub environment secret, passed as the sensitive `TF_VAR_scim_credentials`; stored by the provider in state and in saved plans, rotated from the AWS console | Until rotated |
 | Run scheduled identity hygiene against Graph (outside CI) | One user-assigned managed identity per privilege tier on the Automation account, created by Terraform; each tier's Graph app roles granted by Terraform; each job asks the Automation identity endpoint for a token with its own tier's `client_id` (ADR 0016) | About an hour, per job |
 | Run scheduled governance against Azure Resource Manager and Storage (outside CI) | The `observer` and `pim` tier identities; standing role assignments by scope and role name inside each tier, the container role from `backup_storage` for the tier that writes backups; tokens for ARM and Storage from the same endpoint | About an hour, per job |
@@ -673,7 +783,10 @@ The AWS identity is split by purpose and partition the same way. `AWS_PLAN_ROLE_
 and `AWS_APPLY_ROLE_ARN` are repository variables that each GitHub environment
 overrides: `commercial-plan` and `govcloud-plan` point at reader roles, `commercial`
 and `govcloud-apply` at writers, and the GovCloud ones are `arn:aws-us-gov` roles in
-the GovCloud delegated administrator account.
+the GovCloud delegated administrator account. The same environments give
+`TG_AWS_DEPLOY_ROLE_NAME` the name of the read-only or the writer deployment
+role in every account, and each of those trusts only its own environment's
+OIDC role, so the split survives into the accounts.
 
 No credential is written to disk by the pipeline, and no credential lives in the
 repository.

@@ -1,5 +1,7 @@
 # PR validation for the AWS identity-as-code tree (tenants/aws, which holds one
-# IAM Identity Center cell per partition).
+# IAM Identity Center cell per partition and, under
+# <partition>/accounts/<account-name>/, the account cells of the baseline,
+# the catalog, and the app stacks; docs/adr/0017).
 #
 # Static checks run on every PR that touches Terraform or Terragrunt under the
 # AWS paths. A speculative plan runs only for cells affected by the change: a
@@ -19,6 +21,19 @@
 # one exists, but only inside a job that names the environment, which is why
 # the state variables are set at job level here and not at workflow level.
 #
+# An account cell's plan additionally runs its provider as the read-only
+# deployment role every account carries,
+# arn:<partition>:iam::<account id>:role/<TG_AWS_DEPLOY_ROLE_NAME>, where
+# TG_AWS_DEPLOY_ROLE_NAME is a repository variable the "<partition>-plan"
+# environment overrides with the reader's name. The role is not in any
+# generated file: tenants/aws/root.hcl gives an account cell's provider
+# profile = "identity-as-code-<account name>" and no assume_role, and the
+# "Deployment role profile" step below writes that profile on the runner
+# from the locators beside the cell, chained from the OIDC session with
+# credential_source = Environment. The state backend keeps the OIDC
+# session. The reader deployment role trusts only this partition's plan
+# OIDC role, so a pull request can never reach a writer (docs/adr/0003).
+#
 # Plans run one job per cell instead of a single `terragrunt run --all plan` so
 # each cell gets its own artifact, its own PR comment, and its own concurrency
 # group. The result is the same set of plans with better attribution.
@@ -31,6 +46,7 @@ on:
     paths:
       - "modules/aws/**"
       - "stacks/aws-*/**"
+      - "stacks/apps/aws/**"
       - "tenants/aws/**"
       - ".tflint.hcl"
       - ".github/workflows/aws-pr-validation.yml"
@@ -102,7 +118,7 @@ jobs:
       - name: terraform validate (modules and stacks)
         run: |
           set -euo pipefail
-          for dir in modules/aws/* stacks/aws-*; do
+          for dir in modules/aws/* stacks/aws-* stacks/apps/aws/*; do
             [ -d "$dir" ] || continue
             echo "::group::validate $dir"
             terraform -chdir="$dir" init -backend=false -input=false >/dev/null
@@ -129,18 +145,38 @@ jobs:
         run: |
           set -euo pipefail
           changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
-          # A cell is tenants/aws/<partition>/<stack>. %P prints "commercial/aws-identity-center".
-          all_cells=$(find tenants/aws -mindepth 2 -maxdepth 2 -type d -printf '%P\n' | sort)
+          # A cell is any directory under tenants/aws that holds a
+          # terragrunt.hcl, found by that file and never by depth
+          # (docs/adr/0017): commercial/aws-identity-center is one, and so is
+          # commercial/accounts/example-prod/aws-account-baseline; accounts/
+          # and accounts/<account-name>/ hold locators, not cells. %P prints
+          # the path relative to tenants/aws.
+          all_cells=$(find tenants/aws -name terragrunt.hcl -printf '%P\n' | sed 's#/terragrunt\.hcl$##' | sort)
 
-          if echo "$changed" | grep -Eq '^(modules/aws/|stacks/aws-|tenants/aws/root\.hcl|\.github/workflows/aws-pr-validation\.yml)'; then
+          if echo "$changed" | grep -Eq '^(modules/aws/|stacks/aws-|stacks/apps/aws/|tenants/aws/root\.hcl|\.github/workflows/aws-pr-validation\.yml)'; then
             selected="$all_cells"
           else
-            selected=$(echo "$changed" | grep -E '^tenants/aws/[^/]+/[^/]+/' | cut -d/ -f3-4 | sort -u || true)
+            # A cell is affected when a file inside it changed, or when a
+            # locator above it changed: partition.hcl addresses every cell in
+            # the partition and account.hcl every cell in the account, so an
+            # edited locator re-plans the cells it addresses.
+            affected() {
+              local cell="$1" dir="$1"
+              echo "$changed" | grep -Eq "^tenants/aws/${cell}/" && return 0
+              while dir=$(dirname "$dir") && [ "$dir" != "." ]; do
+                echo "$changed" | grep -Eq "^tenants/aws/${dir}/(partition|account)\.hcl$" && return 0
+              done
+              return 1
+            }
+            selected=""
+            for cell in $all_cells; do
+              if affected "$cell"; then selected="$selected$cell"$'\n'; fi
+            done
           fi
 
           # Matrix entries carry the path, a filesystem-safe id for artifact and
           # concurrency names, and the partition for the environment lookup.
-          json=$(printf '%s\n' $selected | grep -v '^$' \
+          json=$(printf '%s\n' $selected | { grep -v '^$' || true; } \
             | jq -R '{path: ., id: (. | gsub("/"; "-")), partition: (. | split("/")[0])}' \
             | jq -sc .)
           echo "Affected cells: $json"
@@ -157,7 +193,8 @@ jobs:
       matrix:
         cell: ${{ fromJson(needs.changed-cells.outputs.cells) }}
 
-    # Reader role and partition-local state bucket live in the
+    # Reader role, partition-local state bucket, and the name of the read-only
+    # deployment role an account cell's provider runs as live in the
     # "<partition>-plan" environment. Sharing the per-cell concurrency group
     # with the release workflow means a PR plan never fights a release apply
     # for the state lock.
@@ -170,6 +207,7 @@ jobs:
       TG_AWS_STATE_BUCKET: ${{ vars.TG_AWS_STATE_BUCKET }}
       TG_AWS_STATE_REGION: ${{ vars.TG_AWS_STATE_REGION }}
       TG_AWS_LOCK_TABLE: ${{ vars.TG_AWS_LOCK_TABLE }}
+      TG_AWS_DEPLOY_ROLE_NAME: ${{ vars.TG_AWS_DEPLOY_ROLE_NAME || 'identity-as-code-deploy' }}
       PLAN_DIR: ${{ github.workspace }}/plans
 
     steps:
@@ -195,6 +233,40 @@ jobs:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ vars.TG_AWS_STATE_REGION }}
           role-session-name: aws-pr-plan-${{ matrix.cell.id }}-${{ github.run_id }}
+
+      - name: Deployment role profile (account cells only)
+        working-directory: tenants/aws/${{ matrix.cell.path }}
+        run: |
+          set -euo pipefail
+          # An account cell has account.hcl one level up and partition.hcl
+          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # provider profile = "identity-as-code-<account_name>" and no
+          # assume_role; this step fills that profile on the runner with the
+          # deployment role this environment names, chained from the OIDC
+          # session already in the environment. The role name never enters
+          # the plan file. A partition-wide cell has no locator and nothing
+          # to do. The last line proves the chain lands in the account the
+          # locator names before Terragrunt runs.
+          if [ ! -f ../account.hcl ]; then
+            echo "No account locator above this cell; the OIDC session is the identity."
+            exit 0
+          fi
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
+            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            exit 1
+          fi
+          profile="identity-as-code-${account_name}"
+          aws configure set --profile "$profile" role_arn "arn:${partition}:iam::${account_id}:role/${TG_AWS_DEPLOY_ROLE_NAME}"
+          aws configure set --profile "$profile" credential_source Environment
+          aws configure set --profile "$profile" role_session_name "aws-pr-plan-${{ matrix.cell.id }}-${{ github.run_id }}"
+          landed=$(aws sts get-caller-identity --profile "$profile" --query Account --output text)
+          if [ "$landed" != "$account_id" ]; then
+            echo "Profile $profile landed in account $landed, not $account_id."
+            exit 1
+          fi
 
       - name: terragrunt plan
         working-directory: tenants/aws/${{ matrix.cell.path }}

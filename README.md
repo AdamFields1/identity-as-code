@@ -37,7 +37,11 @@ tenant consistent: zones together with the rules that reference them, permission
 sets together with the assignments that use them. A stack is where names are
 resolved to IDs, so it is the only place with logic. One stack is one state file,
 one plan to review, and one blast radius. A stack may compose one module or
-several; what makes it a stack is the deployment boundary, not the count.
+several; what makes it a stack is the deployment boundary, not the count. A
+stack is shared by every tenant of a family (a platform stack), or offers a
+menu of vetted shapes to one account or subscription (a catalog stack), or
+holds one application's composition (an app stack); the cell rule below is the
+same for all three ([ADR 0017](docs/adr/0017-three-kinds-of-stack.md)).
 
 **Cells answer where, and with what values.** A tenant is a folder of cells. Each
 cell is one stack applied for one tenant, and it contains exactly three things: an
@@ -80,15 +84,28 @@ decision records carry the reasoning that the commits do not.
 | AWS IAM Identity Center gallery app: SAML, signing certificate, group assignments, SCIM provisioning | `modules/entra/aws-identity-center-app` | `azuread_application`, `azuread_service_principal`, `azuread_service_principal_token_signing_certificate`, `azuread_app_role_assignment`, `azuread_synchronization_secret`, `azuread_synchronization_job` |
 | Identity Center permission sets with partition-aware managed policies, inline policy, and boundary | `modules/aws/permission-set` | `aws_ssoadmin_permission_set`, `aws_ssoadmin_managed_policy_attachment`, `aws_ssoadmin_customer_managed_policy_attachment`, `aws_ssoadmin_permission_set_inline_policy`, `aws_ssoadmin_permissions_boundary_attachment` |
 | Identity Center account assignments parsed from `AWS-<PARTITION>-<accountId>-<PermissionSetName>` group names | `modules/aws/account-assignment` | `aws_ssoadmin_account_assignment` |
+| IAM service roles: trust from an allowlisted service, 12-digit accounts, or one GitHub repository by branch and environment; policies by name; boundary; instance profile for EC2 | `modules/aws/iam-service-role` | `aws_iam_role`, `aws_iam_role_policy_attachment`, `aws_iam_role_policy`, `aws_iam_instance_profile` |
+| Customer managed KMS keys with rotation and a key policy written from role names, trail names, and service users | `modules/aws/kms-key` | `aws_kms_key`, `aws_kms_alias` |
+| S3 buckets: ACLs off, nothing public, versioned, TLS-only, SSE-S3 or SSE-KMS by alias, role allow list, lifecycle, access logging, CloudTrail delivery | `modules/aws/s3-bucket` | `aws_s3_bucket`, `aws_s3_bucket_ownership_controls`, `aws_s3_bucket_public_access_block`, `aws_s3_bucket_versioning`, `aws_s3_bucket_server_side_encryption_configuration`, `aws_s3_bucket_lifecycle_configuration`, `aws_s3_bucket_policy`, `aws_s3_bucket_logging` |
+| Account hardening switches: password policy, EBS encryption by default, account S3 Block Public Access, GuardDuty, Access Analyzer | `modules/aws/account-hardening` | `aws_iam_account_password_policy`, `aws_ebs_encryption_by_default`, `aws_ebs_default_kms_key`, `aws_s3_account_public_access_block`, `aws_guardduty_detector`, `aws_accessanalyzer_analyzer` |
+| Multi-region, validated CloudTrail trails delivering to a named bucket under a named key | `modules/aws/cloudtrail` | `aws_cloudtrail` |
+| CloudWatch Logs log groups under a named customer managed key, retention bounded to the values the API accepts and never "never expire" | `modules/aws/log-group` | `aws_cloudwatch_log_group` |
+| SSM Parameter Store namespaces: one SecureString placeholder per prefix under a named key, written once and never a secret | `modules/aws/ssm-parameter-namespace` | `aws_ssm_parameter` |
 | Automation account with one user-assigned identity per privilege tier, account variables, optional module assets | `modules/azure/automation-account` | `azurerm_automation_account`, `azurerm_user_assigned_identity`, `azurerm_automation_variable_string`, `azurerm_automation_variable_bool`, `azurerm_automation_module` |
 | Runbooks published from repository files, schedules, and job schedules with parameters | `modules/azure/automation-runbooks` | `azurerm_automation_runbook`, `azurerm_automation_schedule`, `azurerm_automation_job_schedule` |
 | Microsoft Graph application permissions for a managed identity, by name | `modules/entra/graph-app-role-grant` | `azuread_app_role_assignment` |
 | Standing Azure role assignments for a workload identity, scopes and roles by name, optional ABAC conditions written with name tokens | `modules/azure/workload-role-assignment` | `azurerm_role_assignment` |
 | Keyless backup storage: account with shared key access disabled, infrastructure encryption, versioning with a lifecycle rule, private container, container-scoped writer roles | `modules/azure/backup-storage` | `azurerm_storage_account`, `azurerm_storage_container`, `azurerm_storage_management_policy`, `azurerm_role_assignment` |
+| Resource groups with an optional CanNotDelete lock | `modules/azure/resource-group` | `azurerm_resource_group`, `azurerm_management_lock` |
+| User-assigned managed identities with GitHub Actions federated credentials, subjects built from organization, repository, and branch or environment | `modules/azure/managed-identity` | `azurerm_user_assigned_identity`, `azurerm_federated_identity_credential` |
+| Key vaults: RBAC-only, purge protection, Deny firewall, audit to Log Analytics, data-plane roles for identities by key and Entra groups by name | `modules/azure/key-vault` | `azurerm_key_vault`, `azurerm_monitor_diagnostic_setting`, `azurerm_role_assignment` |
+| Storage accounts: no shared keys, TLS 1.2, infrastructure encryption, versioning, private containers, Deny firewall, data-plane roles at account or container scope | `modules/azure/storage-account` | `azurerm_storage_account`, `azurerm_storage_container`, `azurerm_monitor_diagnostic_setting`, `azurerm_role_assignment` |
+| Subscription baseline: Defender for Cloud plans, activity log export to a Log Analytics workspace (found or created), initiative assignments by display name | `modules/azure/subscription-baseline` | `azurerm_security_center_subscription_pricing`, `azurerm_log_analytics_workspace`, `azurerm_monitor_diagnostic_setting`, `azurerm_subscription_policy_assignment` |
 | PIM activation settings of undeclared Azure pairs and Entra directory roles, group eligibility end dates, restricted-offer subscriptions, the runbooks' own source and job health | `automation/runbooks/*` on `automation/lib/Runbook.Common.ps1` | none: Graph, ARM, and Storage calls from Automation jobs, delivered by `stacks/azure-automation` |
 | Entra authentication methods policy (per-method state, targets, and settings; registration campaign; report suspicious activity; system-preferred MFA), groups by display name | `policies/entra/authentication-methods` with `scripts/Set-AuthenticationMethods.ps1` and `automation/runbooks/Invoke-AuthenticationMethodsDrift.ps1` | none: Graph `PATCH` on patch-only singletons; delivered as `azurerm_automation_variable_string` and a pipeline job |
 
-Nine stacks compose those modules into deployable units:
+Nine platform stacks compose those modules into deployable units, with a cell in
+every tenant or partition of their family:
 
 | Stack | Composes | Cells |
 |-------|----------|-------|
@@ -110,6 +127,20 @@ runbooks have not been rolled out to it; when they are, the cell is a copy of
 corp's with its own group names and mailbox. Nothing is stubbed to make the
 tenants look symmetrical.
 
+Six more stacks are scoped to one account or one subscription rather than to a
+tenant, and are planned once per cell under `accounts/<account-name>/` or
+`subscriptions/<sub-name>/` ([ADR 0017](docs/adr/0017-three-kinds-of-stack.md)):
+a baseline and a catalog for each cloud, and one app stack for each.
+
+| Stack | Composes | Cells |
+|-------|----------|-------|
+| `stacks/aws-account-baseline` | password policy, EBS default encryption, S3 Block Public Access, GuardDuty, and Access Analyzer, then a key, the trail bucket (and its access log bucket), and the multi-region trail | `tenants/aws/commercial/accounts/{example-prod,example-dev}/aws-account-baseline` |
+| `stacks/aws-account-workloads` | the AWS catalog: service roles, then KMS keys, then S3 buckets, wired to each other by name and checked at plan | `tenants/aws/commercial/accounts/{example-prod,example-dev}/aws-account-workloads` |
+| `stacks/apps/aws/payments-api` | two ECS task roles, a key, an artifacts bucket, an encrypted log group, and a SecureString parameter namespace, every name derived from the application and the environment | `tenants/aws/commercial/accounts/example-prod/payments-api` |
+| `stacks/azure-subscription-baseline` | a locked resource group and a Log Analytics workspace (or an existing workspace by name), then Defender plans, the activity log export, and initiative assignments | `tenants/azure/corp/subscriptions/sub-example-prod/azure-subscription-baseline` |
+| `stacks/azure-subscription-workloads` | the Azure catalog: resource groups, then managed identities, then key vaults and storage accounts, with data-plane roles granted to identities by key and to Entra groups by name | `tenants/azure/corp/subscriptions/sub-example-prod/azure-subscription-workloads` |
+| `stacks/apps/azure/data-pipeline` | a locked group, a federated identity, a vault, and a hierarchical-namespace lake with two containers, the identity granted on each, every name derived from the pipeline and the environment | `tenants/azure/corp/subscriptions/sub-example-prod/data-pipeline` |
+
 ## Layout
 
 ```
@@ -117,8 +148,10 @@ identity-as-code/
   modules/
     okta/                       network-zone, session-policy, mfa-policy, password-policy
     entra/                      app registration, Conditional Access, PIM for groups, AWS Identity Center app, and Graph app role grant building blocks
-    azure/                      rbac-role-definition, pim-role-policy, pim-eligible-assignment, automation-account, automation-runbooks, workload-role-assignment, backup-storage
-    aws/                        permission-set, account-assignment
+    azure/                      rbac-role-definition, pim-role-policy, pim-eligible-assignment, automation-account, automation-runbooks, workload-role-assignment, backup-storage,
+                                resource-group, managed-identity, key-vault, storage-account, subscription-baseline
+    aws/                        permission-set, account-assignment, iam-service-role, kms-key, s3-bucket, account-hardening, cloudtrail,
+                                log-group, ssm-parameter-namespace
   stacks/                       units of deployment: compose modules, resolve names to IDs
     okta-config/
     entra-app-registrations/
@@ -129,6 +162,13 @@ identity-as-code/
     azure-pim-governance/
     azure-automation/
     aws-identity-center/
+    aws-account-baseline/       one cell per account: the hardening switches, a key, the trail bucket, the trail
+    aws-account-workloads/      one cell per account: the AWS catalog, roles, keys, and buckets as values
+    azure-subscription-baseline/   one cell per subscription: Defender plans, activity log export, initiatives
+    azure-subscription-workloads/  one cell per subscription: the Azure catalog, groups, identities, vaults, and storage accounts as values
+    apps/                       app stacks, one application's composition each, values-only cells (docs/adr/0017)
+      aws/payments-api/
+      azure/data-pipeline/
   automation/
     runbooks/                   PowerShell runbooks deployed by stacks/azure-automation: credential hygiene, guest lifecycle, authentication methods drift,
                                 runbook backup, PIM eligibility renewal, subscription guard, Azure PIM policy governance, Entra PIM policy drift, job watcher
@@ -144,7 +184,7 @@ identity-as-code/
       dev/terragrunt.hcl
       prod/terragrunt.hcl
     azure/                      one directory per tenant, one cell per stack inside it
-      root.hcl                  Azure Storage state, azurerm + azuread provider generation, adoption hook
+      root.hcl                  Azure Storage state, azurerm + azuread provider generation from ARM_TENANT_ID and the subscription locator, adoption hook
       corp/
         azure-rbac-roles/terragrunt.hcl
         azure-pim-governance/terragrunt.hcl
@@ -153,17 +193,35 @@ identity-as-code/
         entra-aws-federation/terragrunt.hcl
         entra-conditional-access/terragrunt.hcl
         entra-pim-governance/terragrunt.hcl
+        subscriptions/          subscription-scoped cells, addressed by a locator, never by a value (docs/adr/0017)
+          sub-example-prod/
+            subscription.hcl    locator: subscription id and name; not a cell
+            azure-subscription-baseline/terragrunt.hcl
+            azure-subscription-workloads/terragrunt.hcl
+            data-pipeline/terragrunt.hcl
       subsidiary/
         azure-pim-governance/terragrunt.hcl
         entra-conditional-access/terragrunt.hcl
         entra-pim-governance/terragrunt.hcl
     aws/                        one directory per partition, one cell per stack inside it
-      root.hcl                  S3 state per partition, aws provider generation, adoption hook
+      root.hcl                  S3 state per partition, aws provider generation from the locators (allowed_account_ids and the account's profile), adoption hook
       commercial/
+        partition.hcl           locator: ARN partition and default region; not a cell
         aws-identity-center/terragrunt.hcl
+        accounts/               account-scoped cells, addressed by a locator, never by a value (docs/adr/0017)
+          example-prod/
+            account.hcl         locator: account id and name; not a cell
+            aws-account-baseline/terragrunt.hcl
+            aws-account-workloads/terragrunt.hcl
+            payments-api/terragrunt.hcl
+          example-dev/
+            account.hcl
+            aws-account-baseline/terragrunt.hcl
+            aws-account-workloads/terragrunt.hcl
       govcloud/
+        partition.hcl
         aws-identity-center/terragrunt.hcl
-  .github/workflows/            PR validation and release trains: okta-* (dev -> prod), azure-* (corp -> subsidiary), aws-* (commercial -> govcloud), plus automation-tests (Pester on 5.1 and 7)
+  .github/workflows/            PR validation and release trains: okta-* (dev -> prod), azure-* (corp, then its subscriptions -> subsidiary), aws-* (commercial, then its accounts -> govcloud), plus automation-tests (Pester on 5.1 and 7)
   scripts/                      PowerShell helpers to adopt an existing tenant, export drift, import live PIM eligibilities, and enforce the authentication methods policy
   tests/                        zero-change import gate
   docs/                         architecture diagrams and decision records
@@ -200,6 +258,36 @@ assigned directly. See [ADR 0008](docs/adr/0008-entra-id-as-the-identity-source-
 cell says only which region it is. State bucket and OIDC role are per partition
 and arrive through the environment. See
 [ADR 0009](docs/adr/0009-partition-aware-aws-cells.md).
+
+**Three kinds of stack, and addressing lives in locator files.** The nine
+stacks above are platform stacks: every tenant of a family has a cell for
+each, and the tenant's values are the only difference. The next requests were
+not tenant-wide: one account needs a role a CI runner can assume, one
+subscription needs a vault, one application needs a bucket, a key, and the
+roles that use them, in two accounts. Rather than a `main.tf` in the account
+or a `roles_by_account` map in a shared stack, the layout keeps the three
+layers and the cell rule exactly as they are and drops the unstated assumption
+that a stack is shared. A catalog stack (`aws-account-workloads`,
+`azure-subscription-workloads`) offers a menu of vetted shapes as values, so
+an account or a subscription gets a one-off role, key, bucket, identity, or
+vault without anyone writing Terraform, with the guardrails in the modules
+and one state file per cell. An app stack (`apps/aws/payments-api`,
+`apps/azure/data-pipeline`) holds the composition one application needs when
+the catalog cannot express it, with one cell per account or subscription it
+is deployed in. The line is drawn twice: a shape leaves the catalog when it
+needs cross-resource wiring a value cannot say, and a composition becomes an
+app stack when it is needed in more than one place; the catalog offers
+shapes, never passthrough policy documents or ARNs. Which account or
+subscription a cell is in is addressing, not configuration: it lives in a
+locator file in the tree (`partition.hcl`, `account.hcl`,
+`subscription.hcl`), never in a cell's inputs, and the roots turn it into
+provider configuration (`allowed_account_ids` and a per-account profile on
+AWS, the `azurerm` subscription on Azure), so a cell still holds no ID and
+cannot be re-aimed by editing a value. The AWS deployment role itself is in
+no generated file, because a saved plan carries the generated provider and
+the plan and apply environments name different roles; it is named in the
+profile, which the workflow writes on the runner. See
+[ADR 0017](docs/adr/0017-three-kinds-of-stack.md).
 
 **Automation is code, dry by default, on a managed identity.** The work that
 depends on live data (which credentials expired, which guests went quiet,
@@ -304,6 +392,10 @@ See [ADR 0002](docs/adr/0002-values-only-tenant-cells.md).
 `azure/corp/azure-pim-governance/terraform.tfstate`, and
 `tenants/aws/govcloud/aws-identity-center` writes
 `aws/govcloud/aws-identity-center/terraform.tfstate` into the GovCloud bucket.
+An account cell is one level deeper and nothing else changes:
+`tenants/aws/commercial/accounts/example-prod/aws-account-baseline` writes
+`aws/commercial/accounts/example-prod/aws-account-baseline/terraform.tfstate`,
+and the locator beside it plays no part in the key.
 Nobody types a state key, so nobody can point two cells at the same one.
 
 **Azure state lives in Azure Storage, with no storage keys.** The Azure tree keeps
@@ -337,7 +429,13 @@ re-run rather than applied blind. The Azure train additionally applies the corp
 roles cell before planning the corp governance and automation cells, because
 both resolve custom roles by name at plan time, and applies the corp
 automation cell after the governance cell so corp is complete before the
-subsidiary gate opens.
+subsidiary gate opens. Both trains then carry the cells that are scoped to
+one account or subscription (ADR 0017): the AWS train applies the commercial
+account cells after the Identity Center cell, one chain per account, baseline
+before catalog before app stack, and the GovCloud gate waits for the last
+apply of every account; the Azure train applies the corp subscription cells
+after the corp tenant cells, baseline first because the other cells name the
+workspace it creates, and the subsidiary gate waits for them too.
 
 That ordering has a review cost worth stating: a pull request that introduces
 a custom role **and** its first use shows a failing plan for the consuming
@@ -388,6 +486,12 @@ terragrunt plan
 `tenants/azure/root.hcl`; no cell contains either value. Switching tenants is
 `az login` to the other tenant and re-exporting the two variables.
 
+A subscription cell needs the same environment and nothing more: under
+`tenants/azure/corp/subscriptions/sub-example-prod/`, `root.hcl` reads the
+subscription from `subscription.hcl` beside the cell and ignores
+`ARM_SUBSCRIPTION_ID` for that cell, so the identity only has to hold the
+roles the stack README lists at that subscription.
+
 The `entra-aws-federation` cell additionally needs the SCIM credentials the AWS
 console issued, as a sensitive map keyed by target. They are never in a file:
 
@@ -417,6 +521,31 @@ and `TG_AWS_STATE_REGION=us-gov-west-1`. Nothing in HCL changes; the modules rea
 the partition from the credentials they are given. Plan the Entra federation cell
 first for a new instance: the AWS cell resolves groups by display name in the
 identity store, and they exist there only after SCIM has provisioned them.
+
+An account cell is the same commands from the cell's directory plus one
+shared config profile per account. `root.hcl` generates
+`profile = "identity-as-code-<account-name>"` for every cell under
+`accounts/<account-name>/` and no `assume_role`, so the deployment role is
+named in that profile on your workstation and never in a generated file
+(docs/adr/0017 says why). Define it once per account, chained from the
+session that reaches state:
+
+```bash
+aws configure set --profile identity-as-code-example-prod role_arn arn:aws:iam::111111111111:role/identity-as-code-deploy
+aws configure set --profile identity-as-code-example-prod source_profile CHANGEME-identity-center-admin
+
+cd tenants/aws/commercial/accounts/example-prod/aws-account-baseline
+terragrunt init
+terragrunt plan
+```
+
+The role name is the estate's; in CI it is `TG_AWS_DEPLOY_ROLE_NAME`, which
+the `*-plan` environments set to the read-only deployment role and the apply
+environments to the writer, and the workflow writes the same profile on the
+runner from the cell's locators. An SSO profile that lands directly in the
+account works too, under the same name. The state backend keeps using
+`AWS_PROFILE`; only the provider uses the account's profile, so the
+deployment role never needs the state bucket.
 
 To adopt an existing tenant instead of creating policies from scratch:
 
@@ -466,7 +595,13 @@ zero-change gate applied to an object Terraform cannot hold.
   them, and the AWS stack only ever looks a group up by display name.
 - Provisioning the S3 buckets, DynamoDB tables, AWS OIDC roles (one set per
   partition), Azure storage account, federated credentials, and GitHub
-  environments. That is platform bootstrap and lives in a separate repository.
+  environments, together with the two deployment roles every AWS account
+  carries under the names the `*-plan` and apply environments give
+  `TG_AWS_DEPLOY_ROLE_NAME` (the read-only one trusted only by the
+  partition's plan OIDC role, the writer only by its apply OIDC role,
+  neither with access to the state bucket) and the GitHub OIDC provider in
+  accounts whose roles trust a repository. That is platform bootstrap and
+  lives in a separate repository.
 - The three guest lifecycle stage groups, the other groups the runbooks name
   (approvers, the subscription owner allowlist), the shared mailbox the
   runbooks send from, the Exchange application access policies that restrict
@@ -521,6 +656,30 @@ falls back to the default role ID and otherwise fails with the list), that the
 synchronization template the gallery application publishes is `aws` (the module
 README says how to list it), and that the provider leaves the template's SAML
 settings alone when `identifier_uris` and `reply_urls` are set.
+
+The account and subscription pieces (`modules/aws/iam-service-role`,
+`kms-key`, `s3-bucket`, `account-hardening`, `cloudtrail`, `log-group`, and
+`ssm-parameter-namespace`; `modules/azure/resource-group`,
+`managed-identity`, `key-vault`, `storage-account`, and
+`subscription-baseline`; the two baseline stacks, the two catalog stacks,
+the two app stacks, and the locator handling in both roots) were written the
+same way, with Terraform 1.16: every module and stack passes
+`terraform init -backend=false` and `terraform validate` against the pinned
+providers, each stack was planned offline with `terraform test` and a
+mocked provider fed a cell's inputs, and the roots' derived locals and
+generated provider blocks were rendered through the HCL engine for an account
+cell, a partition-wide cell, a subscription cell, a tenant-wide cell, and each
+guard failure. The cells under `accounts/` and `subscriptions/` were checked
+the same way: each cell's inputs, verbatim, against its stack with
+`terraform validate`, and the AWS cells additionally through a mocked plan.
+What only a real account or subscription can confirm: that each deployment
+role trusts only its own environment's OIDC role, that the profile the
+workflows write chains into the account the locator names (the step checks
+with `sts:GetCallerIdentity` before Terragrunt runs), that
+`allowed_account_ids` stops a mis-addressed plan before its first resource
+API call, that the first apply of an account creates the trail's key,
+bucket, and trail in that order, and the first-apply items each stack README
+lists. No live account or subscription was used.
 
 The automation pieces (`modules/azure/automation-account`,
 `modules/azure/automation-runbooks`, `modules/azure/workload-role-assignment`,
