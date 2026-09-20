@@ -142,22 +142,22 @@ flowchart LR
   EGG --> SAA
   AWR --> SAA
   ABS --> SAA
-  RB1 -.file.-> SAA
-  RB2 -.file.-> SAA
-  RB3 -.file.-> SAA
-  LIB -.inlined into RB3.-> SAA
-  RB4 -.file.-> SAA
-  RB5 -.file.-> SAA
-  RB6 -.file.-> SAA
-  RB7 -.file.-> SAA
-  RB8 -.file.-> SAA
-  RB9 -.file.-> SAA
-  RCL -.inlined into RB4 to RB9.-> SAA
-  LIB -.dot-sourced.-> AMS
-  AMP -.variables.-> SAA
-  AMP -.folder.-> AMS
-  PBA -.variable PimPolicy_AzureBaseline.-> SAA
-  PBE -.variable PimPolicy_EntraBaseline.-> SAA
+  RB1 -.->|file| SAA
+  RB2 -.->|file| SAA
+  RB3 -.->|file| SAA
+  LIB -.->|inlined into RB3| SAA
+  RB4 -.->|file| SAA
+  RB5 -.->|file| SAA
+  RB6 -.->|file| SAA
+  RB7 -.->|file| SAA
+  RB8 -.->|file| SAA
+  RB9 -.->|file| SAA
+  RCL -.->|inlined into RB4 to RB9| SAA
+  LIB -.->|dot-sourced| AMS
+  AMP -.->|variables| SAA
+  AMP -.->|folder| AMS
+  PBA -.->|variable PimPolicy_AzureBaseline| SAA
+  PBE -.->|variable PimPolicy_EntraBaseline| SAA
   WPS --> SWI
   WAA --> SWI
   WSR --> SAW
@@ -205,19 +205,19 @@ flowchart LR
   SSW --> CSUB
   SDP --> CSUB
 
-  RO -.include.-> DEV
-  RO -.include.-> PROD
-  RA -.include.-> CORP
-  RA -.include.-> SUB
-  RW -.include.-> COMM
-  RW -.include.-> GOVC
-  RA -.include.-> CSUB
-  RW -.include.-> ACCT
-  SLOC -.read by root.hcl for subscription_id.-> CSUB
-  PLOC -.read by root.hcl for region and partition.-> COMM
-  PLOC -.read by root.hcl for region and partition.-> GOVC
-  PLOC -.read by root.hcl for region and partition.-> ACCT
-  ALOC -.read by root.hcl for allowed_account_ids and the account profile.-> ACCT
+  RO -.->|include| DEV
+  RO -.->|include| PROD
+  RA -.->|include| CORP
+  RA -.->|include| SUB
+  RW -.->|include| COMM
+  RW -.->|include| GOVC
+  RA -.->|include| CSUB
+  RW -.->|include| ACCT
+  SLOC -.->|read by root.hcl for subscription_id| CSUB
+  PLOC -.->|read by root.hcl for region and partition| COMM
+  PLOC -.->|read by root.hcl for region and partition| GOVC
+  PLOC -.->|read by root.hcl for region and partition| ACCT
+  ALOC -.->|read by root.hcl for allowed_account_ids and the account profile| ACCT
 
   DEV --> OPR
   PROD --> OPR
@@ -227,8 +227,8 @@ flowchart LR
   SUB --> APR
   CORP --> AREL
   SUB --> AREL
-  AMS -.PATCH job.-> AREL
-  AMS -.drift check.-> APR
+  AMS -.->|PATCH job| AREL
+  AMS -.->|drift check| APR
   COMM --> WPR
   GOVC --> WPR
   COMM --> WREL
@@ -238,13 +238,13 @@ flowchart LR
   ACCT --> WPR
   ACCT --> WREL
 
-  PGT -.plan gate.-> OPR
-  PGT -.plan gate.-> APR
-  PGT -.plan gate.-> WPR
-  PGT -.report.-> OREL
-  PGT -.report.-> AREL
-  PGT -.report.-> WREL
-  RLT -.cells.py waves.-> WREL
+  PGT -.->|plan gate| OPR
+  PGT -.->|plan gate| APR
+  PGT -.->|plan gate| WPR
+  PGT -.->|report| OREL
+  PGT -.->|report| AREL
+  PGT -.->|report| WREL
+  RLT -.->|cells.py waves| WREL
   RLT --> RL
 ```
 
@@ -378,10 +378,10 @@ flowchart TB
     RDD -->|role definition IDs| POL
     RDD -->|role definition IDs| ELG
     EG -->|principal IDs| ELG
-    POL -.depends_on.-> ELG
+    POL -.->|depends_on| ELG
   end
 
-  RD -.role display name only.-> RDD
+  RD -.->|role display name only| RDD
 ```
 
 Policies are written before eligibilities because Azure validates an eligibility's
@@ -437,10 +437,10 @@ flowchart TB
     IDE --> BLOB
   end
 
-  RBK -.schedule fires.-> JOB
-  GRANT -.what the token may do.-> GRAPH
-  RAS -.what the token may do.-> ARM
-  BST -.what the token may do.-> BLOB
+  RBK -.->|schedule fires| JOB
+  GRANT -.->|what the token may do| GRAPH
+  RAS -.->|what the token may do| ARM
+  BST -.->|what the token may do| BLOB
 ```
 
 The account and its identities come first because both leaves key off them:
@@ -503,9 +503,9 @@ flowchart LR
     REN["Invoke-PimEligibilityRenewal\ngroup eligibilities about to lapse"]
   end
 
-  APG -.same values, same pull request.-> AB
-  EPG -.same values, same pull request.-> EB
-  APG -.dated groups.-> RP
+  APG -.->|same values, same pull request| AB
+  EPG -.->|same values, same pull request| EB
+  APG -.->|dated groups| RP
   AB --> AZG
   EB --> ENG
   RP --> REN
@@ -601,8 +601,8 @@ flowchart LR
     PSG -->|ARNs by name| AAG
   end
 
-  APPC -.SCIM, same display names.-> ISC
-  APPG -.SCIM, same display names.-> ISG
+  APPC -.->|SCIM, same display names| ISC
+  APPG -.->|SCIM, same display names| ISG
 ```
 
 The Entra cell lists every AWS access group once; the stack hands each
