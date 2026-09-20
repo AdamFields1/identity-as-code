@@ -17,7 +17,10 @@
 #   wave 0        commercial/aws-identity-center
 #   wave 1        commercial/accounts/{example-dev,example-prod}/aws-account-baseline
 #   wave 2        commercial/accounts/{example-dev,example-prod}/aws-account-workloads
-#   wave 3        commercial/accounts/{example-dev,example-prod}/apps/orders-api
+#   wave 3        commercial/accounts/example-dev/apps/orders-api
+#                 commercial/accounts/example-prod/apps/orders-api/catalog (after the
+#                 account catalog it depends on)
+#   wave 4        commercial/accounts/example-prod/apps/orders-api
 #                 commercial/accounts/example-prod/apps/payments-api
 #   gated wave 0  govcloud/aws-identity-center
 #
@@ -262,8 +265,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -271,15 +274,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -357,8 +377,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -366,15 +386,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -441,8 +478,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -450,15 +487,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -536,8 +590,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -545,15 +599,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -620,8 +691,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -629,15 +700,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -715,8 +803,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -724,15 +812,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -799,8 +904,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -808,15 +913,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -894,8 +1016,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -903,15 +1025,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -978,8 +1117,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -987,15 +1126,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -1073,8 +1229,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -1082,15 +1238,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -1157,8 +1330,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -1166,15 +1339,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -1252,8 +1442,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -1261,15 +1451,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -1339,8 +1546,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -1348,15 +1555,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -1489,8 +1713,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -1498,15 +1722,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -1577,8 +1818,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -1586,15 +1827,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -1671,8 +1929,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -1680,15 +1938,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -1757,8 +2032,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -1766,15 +2041,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -1851,8 +2143,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -1860,15 +2152,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -1937,8 +2246,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -1946,15 +2255,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
@@ -2031,8 +2357,8 @@ jobs:
         working-directory: tenants/aws/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
-          # An account cell has account.hcl one level up and partition.hcl
-          # above that (tenants/aws/root.hcl, ADDRESSING). The root gives its
+          # An account cell has account.hcl above it and partition.hcl above
+          # that (tenants/aws/root.hcl, ADDRESSING). The root gives its
           # provider profile = "identity-as-code-<account_name>" and no
           # assume_role; this step fills that profile on the runner with the
           # deployment role this environment names, chained from the OIDC
@@ -2040,15 +2366,32 @@ jobs:
           # the plan file. A partition-wide cell has no locator and nothing
           # to do. The last line proves the chain lands in the account the
           # locator names before Terragrunt runs.
-          if [ ! -f ../account.hcl ]; then
+          # The locators are found by walking up from the cell, the way the
+          # root does with find_in_parent_folders: an app cell sits under
+          # apps/<app>/ and an app-scoped catalog cell one level further
+          # down, so the depth is not fixed. The walk stops at the directory
+          # that holds root.hcl.
+          account_locator=""
+          partition_locator=""
+          d="$PWD"
+          until [ -f "$d/root.hcl" ] || [ "$d" = "/" ]; do
+            d=$(dirname "$d")
+            if [ -z "$account_locator" ] && [ -f "$d/account.hcl" ]; then
+              account_locator="$d/account.hcl"
+            fi
+            if [ -z "$partition_locator" ] && [ -f "$d/partition.hcl" ]; then
+              partition_locator="$d/partition.hcl"
+            fi
+          done
+          if [ -z "$account_locator" ]; then
             echo "No account locator above this cell; the OIDC session is the identity."
             exit 0
           fi
-          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' ../account.hcl)
-          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' ../account.hcl)
-          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' ../../../partition.hcl)
+          account_id=$(sed -nE 's/^[[:space:]]*account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*$/\1/p' "$account_locator")
+          account_name=$(sed -nE 's/^[[:space:]]*account_name[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' "$account_locator")
+          partition=$(sed -nE 's/^[[:space:]]*partition[[:space:]]*=[[:space:]]*"(aws|aws-us-gov)".*$/\1/p' "${partition_locator:-/dev/null}")
           if [ -z "$account_id" ] || [ -z "$account_name" ] || [ -z "$partition" ]; then
-            echo "Could not read account_id and account_name from ../account.hcl and partition from ../../../partition.hcl."
+            echo "Could not read account_id and account_name from ${account_locator} and partition from ${partition_locator:-a partition.hcl above the cell}."
             exit 1
           fi
           profile="identity-as-code-${account_name}"
