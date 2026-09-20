@@ -91,6 +91,7 @@ decision records carry the reasoning that the commits do not.
 | Multi-region, validated CloudTrail trails delivering to a named bucket under a named key | `modules/aws/cloudtrail` | `aws_cloudtrail` |
 | CloudWatch Logs log groups under a named customer managed key, retention bounded to the values the API accepts and never "never expire" | `modules/aws/log-group` | `aws_cloudwatch_log_group` |
 | SSM Parameter Store namespaces: one SecureString placeholder per prefix under a named key, written once and never a secret | `modules/aws/ssm-parameter-namespace` | `aws_ssm_parameter` |
+| ECR repositories: immutable tags, scan on push, a customer managed key by ARN, two lifecycle rules, a repository policy that grants pull and push by role name and delete to nobody | `modules/aws/ecr-repository` | `aws_ecr_repository`, `aws_ecr_lifecycle_policy`, `aws_ecr_repository_policy` |
 | Automation account with one user-assigned identity per privilege tier, account variables, optional module assets | `modules/azure/automation-account` | `azurerm_automation_account`, `azurerm_user_assigned_identity`, `azurerm_automation_variable_string`, `azurerm_automation_variable_bool`, `azurerm_automation_module` |
 | Runbooks published from repository files, schedules, and job schedules with parameters | `modules/azure/automation-runbooks` | `azurerm_automation_runbook`, `azurerm_automation_schedule`, `azurerm_automation_job_schedule` |
 | Microsoft Graph application permissions for a managed identity, by name | `modules/entra/graph-app-role-grant` | `azuread_app_role_assignment` |
@@ -100,6 +101,7 @@ decision records carry the reasoning that the commits do not.
 | User-assigned managed identities with GitHub Actions federated credentials, subjects built from organization, repository, and branch or environment | `modules/azure/managed-identity` | `azurerm_user_assigned_identity`, `azurerm_federated_identity_credential` |
 | Key vaults: RBAC-only, purge protection, Deny firewall, audit to Log Analytics, data-plane roles for identities by key and Entra groups by name | `modules/azure/key-vault` | `azurerm_key_vault`, `azurerm_monitor_diagnostic_setting`, `azurerm_role_assignment` |
 | Storage accounts: no shared keys, TLS 1.2, infrastructure encryption, versioning, private containers, Deny firewall, data-plane roles at account or container scope | `modules/azure/storage-account` | `azurerm_storage_account`, `azurerm_storage_container`, `azurerm_monitor_diagnostic_setting`, `azurerm_role_assignment` |
+| Container registries: no admin user, no anonymous pull, platform encryption, a Deny-default IP allow list, untagged-manifest retention, and zone redundancy on Premium only, audit to Log Analytics, data-plane roles for identities by key and Entra groups by name | `modules/azure/container-registry` | `azurerm_container_registry`, `azurerm_monitor_diagnostic_setting`, `azurerm_role_assignment` |
 | Subscription baseline: Defender for Cloud plans, activity log export to a Log Analytics workspace (found or created), initiative assignments by display name | `modules/azure/subscription-baseline` | `azurerm_security_center_subscription_pricing`, `azurerm_log_analytics_workspace`, `azurerm_monitor_diagnostic_setting`, `azurerm_subscription_policy_assignment` |
 | PIM activation settings of undeclared Azure pairs and Entra directory roles, group eligibility end dates, restricted-offer subscriptions, the runbooks' own source and job health | `automation/runbooks/*` on `automation/lib/Runbook.Common.ps1` | none: Graph, ARM, and Storage calls from Automation jobs, delivered by `stacks/azure-automation` |
 | Entra authentication methods policy (per-method state, targets, and settings; registration campaign; report suspicious activity; system-preferred MFA), groups by display name | `policies/entra/authentication-methods` with `scripts/Set-AuthenticationMethods.ps1` and `automation/runbooks/Invoke-AuthenticationMethodsDrift.ps1` | none: Graph `PATCH` on patch-only singletons; delivered as `azurerm_automation_variable_string` and a pipeline job |
@@ -127,20 +129,22 @@ runbooks have not been rolled out to it; when they are, the cell is a copy of
 corp's with its own group names and mailbox. Nothing is stubbed to make the
 tenants look symmetrical.
 
-Six more stacks are scoped to one account or one subscription rather than to a
+Eight more stacks are scoped to one account or one subscription rather than to a
 tenant, and are planned once per cell under `accounts/<account-name>/` or
 `subscriptions/<sub-name>/`, with each app cell one level down under `apps/`
 ([ADR 0017](docs/adr/0017-three-kinds-of-stack.md)): a baseline and a catalog
-for each cloud, and one app stack for each.
+for each cloud, and two app stacks for each.
 
 | Stack | Composes | Cells |
 |-------|----------|-------|
 | `stacks/aws-account-baseline` | password policy, EBS default encryption, S3 Block Public Access, GuardDuty, and Access Analyzer, then a key, the trail bucket (and its access log bucket), and the multi-region trail | `tenants/aws/commercial/accounts/{example-prod,example-dev}/aws-account-baseline` |
 | `stacks/aws-account-workloads` | the AWS catalog: service roles, then KMS keys, then S3 buckets, wired to each other by name and checked at plan | `tenants/aws/commercial/accounts/{example-prod,example-dev}/aws-account-workloads` |
 | `stacks/apps/aws/payments-api` | two ECS task roles, a key, an artifacts bucket, an encrypted log group, and a SecureString parameter namespace, every name derived from the application and the environment | `tenants/aws/commercial/accounts/example-prod/apps/payments-api` |
-| `stacks/azure-subscription-baseline` | a locked resource group and a Log Analytics workspace (or an existing workspace by name), then Defender plans, the activity log export, and initiative assignments | `tenants/azure/corp/subscriptions/sub-example-prod/azure-subscription-baseline` |
+| `stacks/apps/aws/orders-api` | a key, then a task role, a task execution role, and an image publisher role trusted by one GitHub environment of one repository through OIDC, an ECR repository the execution role pulls from and the publisher pushes to, an encrypted log group, and a SecureString parameter namespace, every name derived from the application and the environment; no bucket, and the compute is left to the application's pipeline | `tenants/aws/commercial/accounts/{example-prod,example-dev}/apps/orders-api` |
+| `stacks/azure-subscription-baseline` | a locked resource group and a Log Analytics workspace (or an existing workspace by name), then Defender plans, the activity log export, and initiative assignments | `tenants/azure/corp/subscriptions/{sub-example-prod,sub-example-dev}/azure-subscription-baseline` |
 | `stacks/azure-subscription-workloads` | the Azure catalog: resource groups, then managed identities, then key vaults and storage accounts, with data-plane roles granted to identities by key and to Entra groups by name | `tenants/azure/corp/subscriptions/sub-example-prod/azure-subscription-workloads` |
 | `stacks/apps/azure/data-pipeline` | a locked group, a federated identity, a vault, and a hierarchical-namespace lake with two containers, the identity granted on each, every name derived from the pipeline and the environment | `tenants/azure/corp/subscriptions/sub-example-prod/apps/data-pipeline` |
+| `stacks/apps/azure/orders-api` | a locked group, a runtime identity with no credential and a publisher identity federated to one GitHub environment, a container registry with the runtime identity as AcrPull and the publisher as AcrPush, a vault with the runtime identity as Key Vault Secrets User, both audited to a named workspace, and no role on the group, every name derived from the application and the environment; no storage account, and the compute is left to the application's pipeline | `tenants/azure/corp/subscriptions/{sub-example-prod,sub-example-dev}/apps/orders-api` |
 
 ## Layout
 
@@ -150,9 +154,9 @@ identity-as-code/
     okta/                       network-zone, session-policy, mfa-policy, password-policy
     entra/                      app registration, Conditional Access, PIM for groups, AWS Identity Center app, and Graph app role grant building blocks
     azure/                      rbac-role-definition, pim-role-policy, pim-eligible-assignment, automation-account, automation-runbooks, workload-role-assignment, backup-storage,
-                                resource-group, managed-identity, key-vault, storage-account, subscription-baseline
+                                resource-group, managed-identity, key-vault, container-registry, storage-account, subscription-baseline
     aws/                        permission-set, account-assignment, iam-service-role, kms-key, s3-bucket, account-hardening, cloudtrail,
-                                log-group, ssm-parameter-namespace
+                                log-group, ssm-parameter-namespace, ecr-repository
   stacks/                       units of deployment: compose modules, resolve names to IDs
     okta-config/
     entra-app-registrations/
@@ -169,7 +173,9 @@ identity-as-code/
     azure-subscription-workloads/  one cell per subscription: the Azure catalog, groups, identities, vaults, and storage accounts as values
     apps/                       app stacks, one application's composition each, values-only cells (docs/adr/0017)
       aws/payments-api/
+      aws/orders-api/           the container pair: registry, runtime and publisher identities, secrets, logs, no compute (docs/adr/0019)
       azure/data-pipeline/
+      azure/orders-api/         the same shape in Azure's words (docs/adr/0019)
   automation/
     runbooks/                   PowerShell runbooks deployed by stacks/azure-automation: credential hygiene, guest lifecycle, authentication methods drift,
                                 runbook backup, PIM eligibility renewal, subscription guard, Azure PIM policy governance, Entra PIM policy drift, job watcher
@@ -201,6 +207,12 @@ identity-as-code/
             azure-subscription-workloads/terragrunt.hcl
             apps/               app cells, one directory per application (docs/adr/0017)
               data-pipeline/terragrunt.hcl
+              orders-api/terragrunt.hcl
+          sub-example-dev/
+            subscription.hcl
+            azure-subscription-baseline/terragrunt.hcl
+            apps/
+              orders-api/terragrunt.hcl
       subsidiary/
         azure-pim-governance/terragrunt.hcl
         entra-conditional-access/terragrunt.hcl
@@ -217,10 +229,13 @@ identity-as-code/
             aws-account-workloads/terragrunt.hcl
             apps/               app cells, one directory per application (docs/adr/0017)
               payments-api/terragrunt.hcl
+              orders-api/terragrunt.hcl
           example-dev/
             account.hcl
             aws-account-baseline/terragrunt.hcl
             aws-account-workloads/terragrunt.hcl
+            apps/
+              orders-api/terragrunt.hcl
       govcloud/
         partition.hcl
         aws-identity-center/terragrunt.hcl
@@ -313,6 +328,20 @@ no generated file, because a saved plan carries the generated provider and
 the plan and apply environments name different roles; it is named in the
 profile, which the workflow writes on the runner. See
 [ADR 0017](docs/adr/0017-three-kinds-of-stack.md).
+
+**The container pair is the worked example of parity.** `apps/aws/orders-api`
+and `apps/azure/orders-api` give one application everything a container
+needs before it starts, and nothing it runs, in each cloud's own words: an
+image registry, a runtime identity, an identity that pulls the image and
+injects secrets at start-up, a publisher trusted by one GitHub environment
+through OIDC that may push to this registry only, a secrets namespace, and
+logs. The rows match one for one, the compute is deliberately not managed
+because it changes on every release and belongs to the application's
+pipeline, and where the clouds differ (a customer managed key on AWS, the
+registry's platform encryption on Azure; a separate execution role on AWS,
+the runtime identity holding AcrPull on Azure) the difference is stated
+rather than papered over. See
+[ADR 0019](docs/adr/0019-a-container-workload-identity-plane-on-both-clouds.md).
 
 **Automation is code, dry by default, on a managed identity.** The work that
 depends on live data (which credentials expired, which guests went quiet,
@@ -703,15 +732,17 @@ README says how to list it), and that the provider leaves the template's SAML
 settings alone when `identifier_uris` and `reply_urls` are set.
 
 The account and subscription pieces (`modules/aws/iam-service-role`,
-`kms-key`, `s3-bucket`, `account-hardening`, `cloudtrail`, `log-group`, and
-`ssm-parameter-namespace`; `modules/azure/resource-group`,
-`managed-identity`, `key-vault`, `storage-account`, and
-`subscription-baseline`; the two baseline stacks, the two catalog stacks,
-the two app stacks, and the locator handling in both roots) were written the
-same way, with Terraform 1.16: every module and stack passes
+`kms-key`, `s3-bucket`, `account-hardening`, `cloudtrail`, `log-group`,
+`ssm-parameter-namespace`, and `ecr-repository`; `modules/azure/resource-group`,
+`managed-identity`, `key-vault`, `storage-account`, `container-registry`,
+and `subscription-baseline`; the two baseline stacks, the two catalog
+stacks, the four app stacks, and the locator handling in both roots) were
+written the same way, with Terraform 1.16: every module and stack passes
 `terraform init -backend=false` and `terraform validate` against the pinned
-providers, each stack was planned offline with `terraform test` and a
-mocked provider fed a cell's inputs, and the roots' derived locals and
+providers, the `payments-api` and `data-pipeline` stacks were planned
+offline with `terraform test` and a mocked provider fed a cell's inputs
+(the `orders-api` pair passed `validate` with each of its four cells'
+inputs checked against the stack, and nothing more), and the roots' derived locals and
 generated provider blocks were rendered through the HCL engine for an account
 cell, a partition-wide cell, a subscription cell, a tenant-wide cell, and each
 guard failure. The cells under `accounts/` and `subscriptions/` were checked
@@ -801,7 +832,7 @@ Terraform binary, `repo_lint.py --all` passes over every file (its first run
 found the two `[string[]]` runbook parameters the automation README had
 excepted, now semicolon strings like every other list, with Pester tests for
 the parsers, and the Pester suite still passes under Windows PowerShell 5.1
-with Pester 3.4.0), and `cells.py` finds the 22 cells in six waves. What
+with Pester 3.4.0), and `cells.py` finds the 27 cells in six waves. What
 only a run on GitHub can confirm: the matrix the AWS release train reads
 from `cells.py`, the `fromJson` indexing of its wave jobs and the skip rules
 between them, and the step summary and pull request comment the plan gate

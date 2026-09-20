@@ -31,6 +31,7 @@ flowchart LR
       ARG[resource-group]
       AMI[managed-identity]
       AKV[key-vault]
+      ACR[container-registry]
       AST[storage-account]
       ASB[subscription-baseline]
     end
@@ -44,6 +45,7 @@ flowchart LR
       WCT[cloudtrail]
       WLG[log-group]
       WPN[ssm-parameter-namespace]
+      WER[ecr-repository]
     end
   end
 
@@ -60,9 +62,11 @@ flowchart LR
     SAB[aws-account-baseline]
     SAW[aws-account-workloads]
     SPA["apps/aws/payments-api"]
+    SOA["apps/aws/orders-api"]
     SSB[azure-subscription-baseline]
     SSW[azure-subscription-workloads]
     SDP["apps/azure/data-pipeline"]
+    SOZ["apps/azure/orders-api"]
   end
 
   subgraph runbooks["automation/runbooks (PowerShell, published by the stack)"]
@@ -96,8 +100,8 @@ flowchart LR
     RA[root.hcl]
     CORP[corp/*]
     SUB[subsidiary/*]
-    SLOC["corp/subscriptions/sub-example-prod/subscription.hcl\n(locator, not a cell)"]
-    CSUB["corp/subscriptions/sub-example-prod/*"]
+    SLOC["corp/subscriptions/sub-example-prod/subscription.hcl\ncorp/subscriptions/sub-example-dev/subscription.hcl\n(locators, not cells)"]
+    CSUB["corp/subscriptions/*/*"]
   end
 
   subgraph taws["tenants/aws (values only, one cell per partition; one per account under accounts/)"]
@@ -168,6 +172,11 @@ flowchart LR
   WS3 --> SPA
   WLG --> SPA
   WPN --> SPA
+  WSR --> SOA
+  WKK --> SOA
+  WER --> SOA
+  WLG --> SOA
+  WPN --> SOA
   WAH --> SAB
   WKK --> SAB
   WS3 --> SAB
@@ -183,6 +192,11 @@ flowchart LR
   AKV --> SDP
   AST --> SDP
   AWR --> SDP
+  ARG --> SOZ
+  AMI --> SOZ
+  ACR --> SOZ
+  AKV --> SOZ
+  AWR --> SOZ
 
   SO --> DEV
   SO --> PROD
@@ -201,9 +215,11 @@ flowchart LR
   SAB --> ACCT
   SAW --> ACCT
   SPA --> ACCT
+  SOA --> ACCT
   SSB --> CSUB
   SSW --> CSUB
   SDP --> CSUB
+  SOZ --> CSUB
 
   RO -.->|include| DEV
   RO -.->|include| PROD
@@ -311,8 +327,8 @@ same three blocks as every other cell, and the stacks they point at come in
 three kinds: the shared platform stacks, the catalogs
 (`aws-account-workloads`, `azure-subscription-workloads`) that offer vetted
 shapes as values, and the app stacks under `stacks/apps` that hold one
-application's composition (ADR 0017). The diagram shows `sub-example-prod`
-and the two commercial accounts; a new account or subscription is a directory
+application's composition (ADR 0017). The diagram shows the two corp
+subscriptions and the two commercial accounts; a new account or subscription is a directory
 with a locator, and the pull request workflows find cells by the presence of
 `terragrunt.hcl`, not by depth. A new AWS cell needs no workflow edit,
 because `aws-release` reads its cells and their waves from
@@ -650,6 +666,9 @@ key = "azure/${path_relative_to_include()}/terraform.tfstate"
 | `tenants/azure/subsidiary/azure-pim-governance` | `azure/subsidiary/azure-pim-governance/terraform.tfstate` |
 | `tenants/azure/corp/subscriptions/sub-example-prod/azure-subscription-baseline` | `azure/corp/subscriptions/sub-example-prod/azure-subscription-baseline/terraform.tfstate` |
 | `tenants/azure/corp/subscriptions/sub-example-prod/apps/data-pipeline` | `azure/corp/subscriptions/sub-example-prod/apps/data-pipeline/terraform.tfstate` |
+| `tenants/azure/corp/subscriptions/sub-example-prod/apps/orders-api` | `azure/corp/subscriptions/sub-example-prod/apps/orders-api/terraform.tfstate` |
+| `tenants/azure/corp/subscriptions/sub-example-dev/azure-subscription-baseline` | `azure/corp/subscriptions/sub-example-dev/azure-subscription-baseline/terraform.tfstate` |
+| `tenants/azure/corp/subscriptions/sub-example-dev/apps/orders-api` | `azure/corp/subscriptions/sub-example-dev/apps/orders-api/terraform.tfstate` |
 
 The `subscription.hcl` locator beside a subscription cell plays no part in
 the key: the key is the path, and the locator only addresses the provider.
@@ -672,6 +691,8 @@ key = "aws/${path_relative_to_include()}/terraform.tfstate"
 | `tenants/aws/govcloud/aws-identity-center` | `aws/govcloud/aws-identity-center/terraform.tfstate` | GovCloud `TG_AWS_STATE_BUCKET` |
 | `tenants/aws/commercial/accounts/example-prod/aws-account-baseline` | `aws/commercial/accounts/example-prod/aws-account-baseline/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
 | `tenants/aws/commercial/accounts/example-prod/apps/payments-api` | `aws/commercial/accounts/example-prod/apps/payments-api/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
+| `tenants/aws/commercial/accounts/example-prod/apps/orders-api` | `aws/commercial/accounts/example-prod/apps/orders-api/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
+| `tenants/aws/commercial/accounts/example-dev/apps/orders-api` | `aws/commercial/accounts/example-dev/apps/orders-api/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
 
 `partition.hcl` and `account.hcl` play no part in the key either; an account
 cell's state sits under the account's directory because the path does.
@@ -791,9 +812,11 @@ planned at merge time and applied after the gate as before. A new AWS cell
 lands in its wave with no workflow edit; a red cell stops the train at its
 wave. `azure-release` still lists its cells (ADR 0018 says why) and applies
 the corp subscription cells after the corp tenant
-cells: `azure-subscription-baseline` first, because the other cells name the
-workspace it creates, then `azure-subscription-workloads` and `data-pipeline`
-side by side, and the subsidiary gate waits for both. The pull request
+cells: each subscription's `azure-subscription-baseline` first, because the
+other cells name the workspace it creates, then `azure-subscription-workloads`,
+`data-pipeline`, and `orders-api` side by side in `sub-example-prod` and
+`orders-api` in `sub-example-dev`, and the subsidiary gate waits for all of
+them. The pull request
 workflows find cells by the presence of `terragrunt.hcl` at any depth, and a
 change to a locator re-plans every cell it addresses.
 

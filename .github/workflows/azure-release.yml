@@ -8,7 +8,10 @@
 #     |                                                                      |
 #     |                    sub-example-prod: plan/apply azure-subscription-baseline
 #     |                                        ---> plan/apply azure-subscription-workloads
-#     |                                        ---> plan/apply data-pipeline
+#     |                                        ---> plan/apply apps/data-pipeline
+#     |                                        ---> plan/apply apps/orders-api
+#     |                    sub-example-dev:  plan/apply azure-subscription-baseline
+#     |                                        ---> plan/apply apps/orders-api
 #     |                                                                      \
 #     |-- plan-subsidiary-pim (merge-time plan, saved as artifact)            \
 #                 \                                                            \
@@ -44,9 +47,13 @@
 # same ordering cost. The subscription itself is addressed by the locator
 # beside each cell, so the corp identities and ARM_SUBSCRIPTION_ID do not
 # change. The gate waits for the last apply of every subscription, so corp
-# is complete before the subsidiary opens. The subsidiary has no subscription
-# cells yet; when it does, they follow apply-subsidiary-pim under the
-# subsidiary environments.
+# is complete before the subsidiary opens. sub-example-prod carries the
+# baseline, the workloads catalog, and two app cells; sub-example-dev
+# carries the baseline and the orders-api app cell only, no catalog, and
+# its chain runs beside prod's rather than before it: the two are the same
+# tenant, so there is no promotion gate between them, only between corp
+# and the subsidiary. The subsidiary has no subscription cells yet; when it
+# does, they follow apply-subsidiary-pim under the subsidiary environments.
 #
 # Subsidiary is the gated tenant, the way prod is for Okta. Its plan is taken
 # at merge time and saved; the reviewer approves that exact plan. If subsidiary
@@ -685,6 +692,272 @@ jobs:
           terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/corp-subscriptions-sub-example-prod-data-pipeline.tfplan"
 
   # ---------------------------------------------------------------------------
+  plan-corp-sub-example-prod-orders-api:
+    name: plan corp/subscriptions/sub-example-prod/apps/orders-api
+    # After the baseline, beside the workloads and data-pipeline cells: the
+    # three share nothing but the workspace name, so they run in parallel.
+    needs: [apply-corp-sub-example-prod-baseline]
+    runs-on: ubuntu-latest
+    environment: corp-plan
+    concurrency:
+      group: azure-cell-corp-subscriptions-sub-example-prod-orders-api
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - name: terragrunt plan
+        working-directory: tenants/azure/corp/subscriptions/sub-example-prod/apps/orders-api
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/corp-subscriptions-sub-example-prod-orders-api.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/corp-subscriptions-sub-example-prod-orders-api.tfplan" > "$PLAN_DIR/corp-subscriptions-sub-example-prod-orders-api.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: azure-plan-corp-subscriptions-sub-example-prod-orders-api-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/corp-subscriptions-sub-example-prod-orders-api.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-corp-sub-example-prod-orders-api:
+    name: apply corp/subscriptions/sub-example-prod/apps/orders-api
+    needs: [plan-corp-sub-example-prod-orders-api]
+    runs-on: ubuntu-latest
+    environment: corp
+    concurrency:
+      group: azure-cell-corp-subscriptions-sub-example-prod-orders-api
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: azure-plan-corp-subscriptions-sub-example-prod-orders-api-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/azure/corp/subscriptions/sub-example-prod/apps/orders-api
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/corp-subscriptions-sub-example-prod-orders-api.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-corp-sub-example-dev-baseline:
+    name: plan corp/subscriptions/sub-example-dev/azure-subscription-baseline
+    # The dev subscription's first cell, after every corp tenant cell has
+    # applied and in parallel with the prod subscription's chain: the two
+    # subscriptions share the corp identities and nothing else, and their
+    # state files are separate. The subscription is addressed by the locator
+    # beside the cell, not by ARM_SUBSCRIPTION_ID (docs/adr/0017). The corp
+    # writer needs the roles the stack README lists at this subscription too.
+    needs: [apply-corp-automation, apply-corp-auth-methods]
+    runs-on: ubuntu-latest
+    environment: corp-plan
+    concurrency:
+      group: azure-cell-corp-subscriptions-sub-example-dev-azure-subscription-baseline
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - name: terragrunt plan
+        working-directory: tenants/azure/corp/subscriptions/sub-example-dev/azure-subscription-baseline
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/corp-subscriptions-sub-example-dev-azure-subscription-baseline.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/corp-subscriptions-sub-example-dev-azure-subscription-baseline.tfplan" > "$PLAN_DIR/corp-subscriptions-sub-example-dev-azure-subscription-baseline.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: azure-plan-corp-subscriptions-sub-example-dev-azure-subscription-baseline-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/corp-subscriptions-sub-example-dev-azure-subscription-baseline.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-corp-sub-example-dev-baseline:
+    name: apply corp/subscriptions/sub-example-dev/azure-subscription-baseline
+    needs: [plan-corp-sub-example-dev-baseline]
+    runs-on: ubuntu-latest
+    environment: corp
+    concurrency:
+      group: azure-cell-corp-subscriptions-sub-example-dev-azure-subscription-baseline
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: azure-plan-corp-subscriptions-sub-example-dev-azure-subscription-baseline-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/azure/corp/subscriptions/sub-example-dev/azure-subscription-baseline
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/corp-subscriptions-sub-example-dev-azure-subscription-baseline.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-corp-sub-example-dev-orders-api:
+    name: plan corp/subscriptions/sub-example-dev/apps/orders-api
+    # After the dev baseline, which creates the workspace this cell names.
+    # There is no workloads cell in dev, so this is the only cell that
+    # follows the baseline there.
+    needs: [apply-corp-sub-example-dev-baseline]
+    runs-on: ubuntu-latest
+    environment: corp-plan
+    concurrency:
+      group: azure-cell-corp-subscriptions-sub-example-dev-orders-api
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - name: terragrunt plan
+        working-directory: tenants/azure/corp/subscriptions/sub-example-dev/apps/orders-api
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/corp-subscriptions-sub-example-dev-orders-api.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/corp-subscriptions-sub-example-dev-orders-api.tfplan" > "$PLAN_DIR/corp-subscriptions-sub-example-dev-orders-api.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: azure-plan-corp-subscriptions-sub-example-dev-orders-api-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/corp-subscriptions-sub-example-dev-orders-api.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-corp-sub-example-dev-orders-api:
+    name: apply corp/subscriptions/sub-example-dev/apps/orders-api
+    needs: [plan-corp-sub-example-dev-orders-api]
+    runs-on: ubuntu-latest
+    environment: corp
+    concurrency:
+      group: azure-cell-corp-subscriptions-sub-example-dev-orders-api
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: azure-plan-corp-subscriptions-sub-example-dev-orders-api-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/azure/corp/subscriptions/sub-example-dev/apps/orders-api
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/corp-subscriptions-sub-example-dev-orders-api.tfplan"
+
+  # ---------------------------------------------------------------------------
   plan-subsidiary-pim:
     name: plan subsidiary/azure-pim-governance (merge-time)
     # Same backend guard as plan-corp-roles; this job has no needs, so it must
@@ -746,7 +1019,7 @@ jobs:
   # ---------------------------------------------------------------------------
   subsidiary-gate:
     name: gate (subsidiary)
-    needs: [apply-corp-pim, apply-corp-automation, apply-corp-auth-methods, apply-corp-sub-example-prod-workloads, apply-corp-sub-example-prod-data-pipeline, plan-subsidiary-pim]
+    needs: [apply-corp-pim, apply-corp-automation, apply-corp-auth-methods, apply-corp-sub-example-prod-workloads, apply-corp-sub-example-prod-data-pipeline, apply-corp-sub-example-prod-orders-api, apply-corp-sub-example-dev-orders-api, plan-subsidiary-pim]
     runs-on: ubuntu-latest
     # The "subsidiary" environment carries required reviewers and a wait timer
     # (Settings -> Environments -> subsidiary -> Deployment protection rules).
