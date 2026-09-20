@@ -16,14 +16,14 @@
 # reach neither, which is the intended outcome, not a reason to open either.
 #
 # State key (derived by root.hcl):
-# azure/corp/subscriptions/sub-example-prod/data-pipeline/terraform.tfstate
+# azure/corp/subscriptions/sub-example-prod/apps/data-pipeline/terraform.tfstate
 
 include "root" {
   path = find_in_parent_folders("root.hcl")
 }
 
 terraform {
-  source = "../../../../../../stacks/apps/azure/data-pipeline"
+  source = "../../../../../../../stacks/apps/azure/data-pipeline"
 }
 
 # Ordering only. The vault and the lake audit to the Log Analytics workspace

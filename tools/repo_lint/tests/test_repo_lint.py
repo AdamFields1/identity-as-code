@@ -106,7 +106,7 @@ def test_cell_shape_path_characters_and_tenant_rules(bad_root: Path, good_root: 
     odd = [f for f in run(bad_root, "cell-shape").findings if f.code == "path-characters"]
     assert len(odd) == 1 and "'odd cell'" in odd[0].message
     assert [f.code for f in repo_lint._cell_path_findings("tenants/gcp/dev/terragrunt.hcl")] == ["tenant-unknown"]
-    assert repo_lint._cell_path_findings("tenants/azure/corp/subscriptions/sub-example-prod/data-pipeline/terragrunt.hcl") == []
+    assert repo_lint._cell_path_findings("tenants/azure/corp/subscriptions/sub-example-prod/apps/data-pipeline/terragrunt.hcl") == []
     assert not [c for c in codes(run(good_root, "cell-shape")) if c[1] in ("path-characters", "tenant-unknown")]
 
 

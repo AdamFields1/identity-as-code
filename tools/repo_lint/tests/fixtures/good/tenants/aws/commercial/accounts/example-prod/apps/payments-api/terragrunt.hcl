@@ -7,7 +7,7 @@ include "root" {
 }
 
 terraform {
-  source = "../../../../../../stacks/apps/aws/payments-api"
+  source = "../../../../../../../stacks/apps/aws/payments-api"
 }
 
 inputs = {

@@ -649,7 +649,7 @@ key = "azure/${path_relative_to_include()}/terraform.tfstate"
 | `tenants/azure/corp/entra-conditional-access` | `azure/corp/entra-conditional-access/terraform.tfstate` |
 | `tenants/azure/subsidiary/azure-pim-governance` | `azure/subsidiary/azure-pim-governance/terraform.tfstate` |
 | `tenants/azure/corp/subscriptions/sub-example-prod/azure-subscription-baseline` | `azure/corp/subscriptions/sub-example-prod/azure-subscription-baseline/terraform.tfstate` |
-| `tenants/azure/corp/subscriptions/sub-example-prod/data-pipeline` | `azure/corp/subscriptions/sub-example-prod/data-pipeline/terraform.tfstate` |
+| `tenants/azure/corp/subscriptions/sub-example-prod/apps/data-pipeline` | `azure/corp/subscriptions/sub-example-prod/apps/data-pipeline/terraform.tfstate` |
 
 The `subscription.hcl` locator beside a subscription cell plays no part in
 the key: the key is the path, and the locator only addresses the provider.
@@ -671,7 +671,7 @@ key = "aws/${path_relative_to_include()}/terraform.tfstate"
 | `tenants/aws/commercial/aws-identity-center` | `aws/commercial/aws-identity-center/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
 | `tenants/aws/govcloud/aws-identity-center` | `aws/govcloud/aws-identity-center/terraform.tfstate` | GovCloud `TG_AWS_STATE_BUCKET` |
 | `tenants/aws/commercial/accounts/example-prod/aws-account-baseline` | `aws/commercial/accounts/example-prod/aws-account-baseline/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
-| `tenants/aws/commercial/accounts/example-prod/payments-api` | `aws/commercial/accounts/example-prod/payments-api/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
+| `tenants/aws/commercial/accounts/example-prod/apps/payments-api` | `aws/commercial/accounts/example-prod/apps/payments-api/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
 
 `partition.hcl` and `account.hcl` play no part in the key either; an account
 cell's state sits under the account's directory because the path does.

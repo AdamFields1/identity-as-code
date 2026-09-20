@@ -19,7 +19,7 @@ Every resource block is in `modules/aws`; this stack holds the names, the
 policies, and the wiring, which is the layer rule the repository README
 states under "Three layers".
 
-Tenant cells under `tenants/aws/<partition>/accounts/<account-name>/payments-api/`
+Tenant cells under `tenants/aws/<partition>/accounts/<account-name>/apps/payments-api/`
 point at this stack and provide values only: the environment name, the log
 retention, and tags. There is one cell per account the application is
 deployed in, and the same stack deploys to the commercial and GovCloud
@@ -201,7 +201,7 @@ README, "How to use it"). Nothing is typed into a cell.
 
 ## The cell
 
-`tenants/aws/commercial/accounts/example-prod/payments-api/terragrunt.hcl`,
+`tenants/aws/commercial/accounts/example-prod/apps/payments-api/terragrunt.hcl`,
 without its header comment:
 
 ```hcl
@@ -210,7 +210,7 @@ include "root" {
 }
 
 terraform {
-  source = "../../../../../../stacks/apps/aws/payments-api"
+  source = "../../../../../../../stacks/apps/aws/payments-api"
 }
 
 inputs = {

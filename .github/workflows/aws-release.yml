@@ -17,7 +17,7 @@
 #   wave 0        commercial/aws-identity-center
 #   wave 1        commercial/accounts/{example-dev,example-prod}/aws-account-baseline
 #   wave 2        commercial/accounts/{example-dev,example-prod}/aws-account-workloads
-#   wave 3        commercial/accounts/example-prod/payments-api
+#   wave 3        commercial/accounts/example-prod/apps/payments-api
 #   gated wave 0  govcloud/aws-identity-center
 #
 # The cells and their order are not written here. The cells job runs

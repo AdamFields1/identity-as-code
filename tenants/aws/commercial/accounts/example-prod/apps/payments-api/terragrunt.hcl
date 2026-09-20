@@ -14,14 +14,14 @@
 # are refused here, so the tags cannot disagree with the names.
 #
 # State key (derived by root.hcl):
-# aws/commercial/accounts/example-prod/payments-api/terraform.tfstate
+# aws/commercial/accounts/example-prod/apps/payments-api/terraform.tfstate
 
 include "root" {
   path = find_in_parent_folders("root.hcl")
 }
 
 terraform {
-  source = "../../../../../../stacks/apps/aws/payments-api"
+  source = "../../../../../../../stacks/apps/aws/payments-api"
 }
 
 inputs = {

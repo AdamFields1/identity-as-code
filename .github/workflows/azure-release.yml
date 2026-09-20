@@ -599,7 +599,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   plan-corp-sub-example-prod-data-pipeline:
-    name: plan corp/subscriptions/sub-example-prod/data-pipeline
+    name: plan corp/subscriptions/sub-example-prod/apps/data-pipeline
     # After the baseline, beside the workloads cell: the two share nothing
     # but the workspace name, so they run in parallel.
     needs: [apply-corp-sub-example-prod-baseline]
@@ -630,7 +630,7 @@ jobs:
           tenant-id: ${{ vars.AZ_TENANT_ID }}
           subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
       - name: terragrunt plan
-        working-directory: tenants/azure/corp/subscriptions/sub-example-prod/data-pipeline
+        working-directory: tenants/azure/corp/subscriptions/sub-example-prod/apps/data-pipeline
         run: |
           set -euo pipefail
           mkdir -p "$PLAN_DIR"
@@ -645,7 +645,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   apply-corp-sub-example-prod-data-pipeline:
-    name: apply corp/subscriptions/sub-example-prod/data-pipeline
+    name: apply corp/subscriptions/sub-example-prod/apps/data-pipeline
     needs: [plan-corp-sub-example-prod-data-pipeline]
     runs-on: ubuntu-latest
     environment: corp
@@ -678,7 +678,7 @@ jobs:
           name: azure-plan-corp-subscriptions-sub-example-prod-data-pipeline-${{ github.sha }}
           path: ${{ env.PLAN_DIR }}
       - name: terragrunt apply (saved plan)
-        working-directory: tenants/azure/corp/subscriptions/sub-example-prod/data-pipeline
+        working-directory: tenants/azure/corp/subscriptions/sub-example-prod/apps/data-pipeline
         run: |
           set -euo pipefail
           terragrunt init -input=false

@@ -121,6 +121,17 @@ subscription-scoped cell at
 `tenants/azure/<tenant>/subscriptions/<sub-name>/<stack>/`, and each is the
 same three blocks as every other cell.
 
+Amended 2026-09-20: an app stack's cell sits one level deeper, under an
+`apps/` directory inside the account or subscription directory
+(`tenants/aws/<partition>/accounts/<account-name>/apps/<app>/`,
+`tenants/azure/<tenant>/subscriptions/<sub-name>/apps/<app>/`), so the
+directory reads as the baseline, the catalog, and the applications, and an
+application is not mistaken for a third kind of account plumbing. Nothing
+else distinguishes it: the same three blocks, the same locators found by
+walking up, the same discovery by the presence of `terragrunt.hcl`, and a
+state key that follows the path. The two app cells were moved in the same
+change.
+
 `tenants/aws/root.hcl` finds the two AWS locators by walking up from the
 cell with `find_in_parent_folders`, reads them with `read_terragrunt_config`,
 and generates the provider with `allowed_account_ids = ["<account_id>"]`

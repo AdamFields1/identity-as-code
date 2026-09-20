@@ -4,7 +4,7 @@ Contract
 --------
 A cell is a directory under ``tenants/`` that holds a ``terragrunt.hcl``.
 It is found by that file and never by depth (ADR 0017): ``corp/azure-rbac-roles``
-is a cell, so is ``corp/subscriptions/sub-example-prod/data-pipeline``, and
+is a cell, so is ``corp/subscriptions/sub-example-prod/apps/data-pipeline``, and
 ``subscriptions/`` and ``subscriptions/<sub-name>/`` hold a locator, not a cell.
 This module answers three questions about cells without running Terragrunt:
 

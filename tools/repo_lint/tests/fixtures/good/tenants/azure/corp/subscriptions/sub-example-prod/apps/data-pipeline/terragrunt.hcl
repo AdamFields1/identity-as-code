@@ -7,7 +7,7 @@ include "root" {
 }
 
 terraform {
-  source = "../../../../../../stacks/apps/azure/data-pipeline"
+  source = "../../../../../../../stacks/apps/azure/data-pipeline"
 }
 
 inputs = {

@@ -28,11 +28,11 @@ the runbooks call graph.microsoft.com, and the Owner role id
 | `stacks/entra-conditional-access` | `tenants/azure/{corp,subsidiary}/entra-conditional-access` |
 | `stacks/azure-subscription-baseline` | `tenants/azure/corp/subscriptions/sub-example-prod/azure-subscription-baseline` |
 | `stacks/azure-subscription-workloads` | `tenants/azure/corp/subscriptions/sub-example-prod/azure-subscription-workloads` |
-| `stacks/apps/azure/data-pipeline` | `tenants/azure/corp/subscriptions/sub-example-prod/data-pipeline` |
+| `stacks/apps/azure/data-pipeline` | `tenants/azure/corp/subscriptions/sub-example-prod/apps/data-pipeline` |
 | `stacks/aws-identity-center` | `tenants/aws/{commercial,govcloud}/aws-identity-center` |
 | `stacks/aws-account-baseline` | `tenants/aws/commercial/accounts/{example-prod,example-dev}/aws-account-baseline` |
 | `stacks/aws-account-workloads` | `tenants/aws/commercial/accounts/example-prod/aws-account-workloads` |
-| `stacks/apps/aws/payments-api` | `tenants/aws/commercial/accounts/example-prod/payments-api` |
+| `stacks/apps/aws/payments-api` | `tenants/aws/commercial/accounts/example-prod/apps/payments-api` |
 
 The AWS access group for the prod account is AWS-COM-111111111111-Admin and
 the SCIM token reaches Terraform as `secret_token = "CHANGEME"`, never a file.
@@ -68,7 +68,8 @@ identity-as-code/
         subscriptions/          subscription-scoped cells
           sub-example-prod/
             subscription.hcl    locator: subscription id and name; not a cell
-            data-pipeline/terragrunt.hcl
+            apps/
+              data-pipeline/terragrunt.hcl
     aws/
       root.hcl
       commercial/
@@ -76,6 +77,7 @@ identity-as-code/
         accounts/
           example-prod/
             account.hcl         locator: account id and name
-            payments-api/terragrunt.hcl
+            apps/
+              payments-api/terragrunt.hcl
   docs/                         decision records
 ```

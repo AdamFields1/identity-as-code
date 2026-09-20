@@ -17,7 +17,7 @@ five modules, in order, into one plan and one state file:
    container.
 5. `workload-role-assignment` gives the identity Reader on the group.
 
-Cells under `tenants/azure/<tenant>/subscriptions/<sub-name>/` point at this
+Cells under `tenants/azure/<tenant>/subscriptions/<sub-name>/apps/` point at this
 stack and provide values only: the pipeline's name and environment, the
 region, the GitHub organization and repository, the workspace, and optionally
 the addresses that may reach the data planes. The subscription comes from
@@ -264,7 +264,7 @@ module "data_pipeline" {
 
 A subscription cell for this stack is the same three blocks as every other
 cell (ADR 0002, ADR 0017), and looks like this. The committed one,
-`tenants/azure/corp/subscriptions/sub-example-prod/data-pipeline/terragrunt.hcl`,
+`tenants/azure/corp/subscriptions/sub-example-prod/apps/data-pipeline/terragrunt.hcl`,
 names the workspace the subscription baseline cell creates
 (`law-example-prod-activity` in `rg-example-baseline`) rather than the
 security workspace shown here:
@@ -275,7 +275,7 @@ include "root" {
 }
 
 terraform {
-  source = "../../../../../../stacks/apps/azure/data-pipeline"
+  source = "../../../../../../../stacks/apps/azure/data-pipeline"
 }
 
 inputs = {
@@ -304,7 +304,7 @@ addresses the cell and the root turns it into the provider's
 `subscription_id`. No tenant ID: `ARM_TENANT_ID`. No principal ID, no
 resource ID, no client ID: the stack wires the first two and outputs the
 third for whoever fills in the workflow's variables. The state key is
-`azure/corp/subscriptions/sub-example-prod/data-pipeline/terraform.tfstate`.
+`azure/corp/subscriptions/sub-example-prod/apps/data-pipeline/terraform.tfstate`.
 
 ## What the workflow needs
 

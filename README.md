@@ -129,17 +129,18 @@ tenants look symmetrical.
 
 Six more stacks are scoped to one account or one subscription rather than to a
 tenant, and are planned once per cell under `accounts/<account-name>/` or
-`subscriptions/<sub-name>/` ([ADR 0017](docs/adr/0017-three-kinds-of-stack.md)):
-a baseline and a catalog for each cloud, and one app stack for each.
+`subscriptions/<sub-name>/`, with each app cell one level down under `apps/`
+([ADR 0017](docs/adr/0017-three-kinds-of-stack.md)): a baseline and a catalog
+for each cloud, and one app stack for each.
 
 | Stack | Composes | Cells |
 |-------|----------|-------|
 | `stacks/aws-account-baseline` | password policy, EBS default encryption, S3 Block Public Access, GuardDuty, and Access Analyzer, then a key, the trail bucket (and its access log bucket), and the multi-region trail | `tenants/aws/commercial/accounts/{example-prod,example-dev}/aws-account-baseline` |
 | `stacks/aws-account-workloads` | the AWS catalog: service roles, then KMS keys, then S3 buckets, wired to each other by name and checked at plan | `tenants/aws/commercial/accounts/{example-prod,example-dev}/aws-account-workloads` |
-| `stacks/apps/aws/payments-api` | two ECS task roles, a key, an artifacts bucket, an encrypted log group, and a SecureString parameter namespace, every name derived from the application and the environment | `tenants/aws/commercial/accounts/example-prod/payments-api` |
+| `stacks/apps/aws/payments-api` | two ECS task roles, a key, an artifacts bucket, an encrypted log group, and a SecureString parameter namespace, every name derived from the application and the environment | `tenants/aws/commercial/accounts/example-prod/apps/payments-api` |
 | `stacks/azure-subscription-baseline` | a locked resource group and a Log Analytics workspace (or an existing workspace by name), then Defender plans, the activity log export, and initiative assignments | `tenants/azure/corp/subscriptions/sub-example-prod/azure-subscription-baseline` |
 | `stacks/azure-subscription-workloads` | the Azure catalog: resource groups, then managed identities, then key vaults and storage accounts, with data-plane roles granted to identities by key and to Entra groups by name | `tenants/azure/corp/subscriptions/sub-example-prod/azure-subscription-workloads` |
-| `stacks/apps/azure/data-pipeline` | a locked group, a federated identity, a vault, and a hierarchical-namespace lake with two containers, the identity granted on each, every name derived from the pipeline and the environment | `tenants/azure/corp/subscriptions/sub-example-prod/data-pipeline` |
+| `stacks/apps/azure/data-pipeline` | a locked group, a federated identity, a vault, and a hierarchical-namespace lake with two containers, the identity granted on each, every name derived from the pipeline and the environment | `tenants/azure/corp/subscriptions/sub-example-prod/apps/data-pipeline` |
 
 ## Layout
 
@@ -198,7 +199,8 @@ identity-as-code/
             subscription.hcl    locator: subscription id and name; not a cell
             azure-subscription-baseline/terragrunt.hcl
             azure-subscription-workloads/terragrunt.hcl
-            data-pipeline/terragrunt.hcl
+            apps/               app cells, one directory per application (docs/adr/0017)
+              data-pipeline/terragrunt.hcl
       subsidiary/
         azure-pim-governance/terragrunt.hcl
         entra-conditional-access/terragrunt.hcl
@@ -213,7 +215,8 @@ identity-as-code/
             account.hcl         locator: account id and name; not a cell
             aws-account-baseline/terragrunt.hcl
             aws-account-workloads/terragrunt.hcl
-            payments-api/terragrunt.hcl
+            apps/               app cells, one directory per application (docs/adr/0017)
+              payments-api/terragrunt.hcl
           example-dev/
             account.hcl
             aws-account-baseline/terragrunt.hcl

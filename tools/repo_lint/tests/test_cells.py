@@ -58,10 +58,10 @@ def test_discovery_describes_platform_scoped_and_app_cells(all_cells: list[cells
     assert pim.dependencies == [f"{CORP}/azure-rbac-roles"]
     assert pim.id == "corp-azure-pim-governance"
 
-    app = c[f"{SUB}/data-pipeline"]
+    app = c[f"{SUB}/apps/data-pipeline"]
     assert (app.scope, app.scope_name, app.kind) == ("subscription", "sub-example-prod", "app")
     assert app.stack == "stacks/apps/azure/data-pipeline"
-    assert app.family_path == "corp/subscriptions/sub-example-prod/data-pipeline"
+    assert app.family_path == "corp/subscriptions/sub-example-prod/apps/data-pipeline"
 
     workloads = c[f"{PROD}/aws-account-workloads"]
     assert (workloads.scope, workloads.scope_name, workloads.kind) == ("account", "example-prod", "catalog")
@@ -114,7 +114,7 @@ def test_reason_module_direct_and_transitive(good_root: Path, all_cells: list[ce
     assert transitive == {
         f"{PROD}/aws-account-baseline": ["module"],
         f"{PROD}/aws-account-workloads": ["module"],
-        f"{PROD}/payments-api": ["module"],
+        f"{PROD}/apps/payments-api": ["module"],
         "tenants/aws/commercial/accounts/example-dev/aws-account-baseline": ["module"],
     }
 
@@ -127,14 +127,14 @@ def test_reason_root(good_root: Path, all_cells: list[cells.Cell]) -> None:
 
 def test_reason_locator_account_partition_and_subscription(good_root: Path, all_cells: list[cells.Cell]) -> None:
     account = selected_paths(good_root, all_cells, [f"{PROD}/account.hcl"])
-    assert set(account) == {f"{PROD}/aws-account-baseline", f"{PROD}/aws-account-workloads", f"{PROD}/payments-api"}
+    assert set(account) == {f"{PROD}/aws-account-baseline", f"{PROD}/aws-account-workloads", f"{PROD}/apps/payments-api"}
     assert all(v == ["locator"] for v in account.values())
 
     partition = selected_paths(good_root, all_cells, ["tenants/aws/commercial/partition.hcl"])
     assert set(partition) == {c.path for c in all_cells if c.family == "aws" and c.tenant == "commercial"}
 
     subscription = selected_paths(good_root, all_cells, [f"{SUB}/subscription.hcl"])
-    assert set(subscription) == {f"{SUB}/azure-subscription-baseline", f"{SUB}/azure-subscription-workloads", f"{SUB}/data-pipeline"}
+    assert set(subscription) == {f"{SUB}/azure-subscription-baseline", f"{SUB}/azure-subscription-workloads", f"{SUB}/apps/data-pipeline"}
     assert all(v == ["locator"] for v in subscription.values())
 
 
@@ -186,7 +186,7 @@ def test_waves_for_the_whole_tree(all_cells: list[cells.Cell]) -> None:
     # subscription cells after the tenant-wide ones: baseline, catalog, app
     assert w[f"{SUB}/azure-subscription-baseline"] == 2
     assert w[f"{SUB}/azure-subscription-workloads"] == 3
-    assert w[f"{SUB}/data-pipeline"] == 4
+    assert w[f"{SUB}/apps/data-pipeline"] == 4
     # the gated tenant after everything in corp
     assert w["tenants/azure/subsidiary/azure-pim-governance"] == 5
     assert w["tenants/azure/subsidiary/entra-conditional-access"] == 5
@@ -195,14 +195,14 @@ def test_waves_for_the_whole_tree(all_cells: list[cells.Cell]) -> None:
     assert w[f"{PROD}/aws-account-baseline"] == 1
     assert w["tenants/aws/commercial/accounts/example-dev/aws-account-baseline"] == 1
     assert w[f"{PROD}/aws-account-workloads"] == 2
-    assert w[f"{PROD}/payments-api"] == 3
+    assert w[f"{PROD}/apps/payments-api"] == 3
     assert w["tenants/aws/govcloud/aws-identity-center"] == 4
 
 
 def test_waves_of_a_subset_start_at_zero(all_cells: list[cells.Cell]) -> None:
-    subset = [c for c in all_cells if c.path in (f"{SUB}/azure-subscription-workloads", f"{SUB}/data-pipeline")]
+    subset = [c for c in all_cells if c.path in (f"{SUB}/azure-subscription-workloads", f"{SUB}/apps/data-pipeline")]
     waves = cells.order_waves(subset)
-    assert [[c.path for c in w] for w in waves] == [[f"{SUB}/azure-subscription-workloads"], [f"{SUB}/data-pipeline"]]
+    assert [[c.path for c in w] for w in waves] == [[f"{SUB}/azure-subscription-workloads"], [f"{SUB}/apps/data-pipeline"]]
 
 
 def test_waves_honour_an_explicit_dependency_without_an_implicit_rule() -> None:

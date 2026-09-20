@@ -25,7 +25,7 @@
 # only modules: every resource block is in modules/aws, and this file holds
 # the names, the policies, and the wiring (README, "Three layers").
 #
-# Tenant cells (tenants/aws/<partition>/accounts/<account-name>/payments-api/
+# Tenant cells (tenants/aws/<partition>/accounts/<account-name>/apps/payments-api/
 # terragrunt.hcl) supply values only: the environment name, the retention,
 # and tags. The account, the partition, and the region are discovered from
 # the provider Terragrunt generated from the cell's locators, and every
