@@ -73,6 +73,18 @@ def test_cell_shape_source_rules(bad_root: Path) -> None:
     assert ("tenants/azure/corp/dynamic-source/terragrunt.hcl", "source-not-static") in codes(report)
 
 
+def test_cell_shape_dependency_must_be_a_cell(bad_root: Path, good_root: Path) -> None:
+    # A dependencies path that resolves to a directory with no terragrunt.hcl
+    # is what a cell's dependents look like after the cell moved one level
+    # down; Terragrunt would fail on it at run time and cells.py drops it.
+    found = codes(run(bad_root, "cell-shape"))
+    assert ("tenants/azure/corp/dangling-dependency/terragrunt.hcl", "dependency-missing") in found
+    assert [c for c in found if c[0] == "tenants/azure/corp/dangling-dependency/terragrunt.hcl"] == [
+        ("tenants/azure/corp/dangling-dependency/terragrunt.hcl", "dependency-missing")
+    ]
+    assert not [c for c in codes(run(good_root, "cell-shape")) if c[1].startswith("dependency")]
+
+
 def test_cell_shape_missing_and_duplicate_blocks(bad_root: Path) -> None:
     report = run(bad_root, "cell-shape")
     found = codes(report, "missing-things/terragrunt.hcl")

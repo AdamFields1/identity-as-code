@@ -30,7 +30,7 @@ terraform {
 # the baseline cell creates, named below and resolved by name; no outputs
 # are read from that cell. See docs/adr/0005.
 dependencies {
-  paths = ["../azure-subscription-baseline"]
+  paths = ["../../azure-subscription-baseline"]
 }
 
 inputs = {

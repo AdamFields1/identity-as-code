@@ -15,7 +15,8 @@ Checks:
 
   cell-shape       tenants/**/terragrunt.hcl holds include, terraform (with a
                    source under stacks/ that exists), inputs, and optionally
-                   dependencies; nothing else. Its directory names are ones a
+                   dependencies (whose paths resolve to cells under tenants/);
+                   nothing else. Its directory names are ones a
                    workflow can use as names, and its tenant is one the
                    family's promotion order knows.
   locators         partition.hcl, account.hcl, and subscription.hcl are locals
@@ -467,6 +468,30 @@ def check_cell_shape(ctx: Context) -> list[Finding]:
                         findings.append(Finding(check, "source-not-under-stacks", rel, first.line, f"source resolves to {resolved or 'outside the repository'}; a cell calls a stack under stacks/ (README, Three layers)"))
                     elif not (ctx.root / resolved).is_dir():
                         findings.append(Finding(check, "source-missing", rel, first.line, f"source resolves to {resolved}, which does not exist"))
+        # A dependencies block orders this cell after other cells. Each path
+        # must resolve to a cell (a directory under tenants/ holding a
+        # terragrunt.hcl): Terragrunt would fail on a missing one at run time,
+        # and cells.py silently drops a path it cannot resolve, so a cell moved
+        # one level down leaves its dependents pointing at nothing unless this
+        # says so.
+        dependency_blocks = [it for it in items if it.name == "dependencies" and it.kind == "block"]
+        if dependency_blocks:
+            first = dependency_blocks[0]
+            value = _cells.attributes(first.tokens).get("paths")
+            if not isinstance(value, list):
+                findings.append(Finding(check, "dependencies-paths-missing", rel, first.line, "dependencies must set paths to a list of literal relative cell paths"))
+            else:
+                cell_dir = (ctx.root / rel).parent
+                for entry in value:
+                    if not isinstance(entry, str) or "${" in entry:
+                        findings.append(Finding(check, "dependency-not-static", rel, first.line, "each dependencies path must be a literal relative path, not a template"))
+                        continue
+                    dependency = _cells.unquote(entry)
+                    resolved = _cells.resolve_under_root(cell_dir, dependency, ctx.root)
+                    if not resolved or not resolved.startswith("tenants/"):
+                        findings.append(Finding(check, "dependency-outside-tenants", rel, first.line, f"dependency {dependency} resolves to {resolved or 'outside the repository'}; a cell depends on another cell under tenants/"))
+                    elif not (ctx.root / resolved / "terragrunt.hcl").is_file():
+                        findings.append(Finding(check, "dependency-missing", rel, first.line, f"dependency {dependency} resolves to {resolved}, which is not a cell (no terragrunt.hcl there); a cell moved one level down leaves its dependents' paths one level short"))
     return findings
 
 
