@@ -460,21 +460,32 @@ import {
 
 An application sometimes needs a resource that does not belong in its
 stack, and the rule that decides the door is wiring: a resource nothing of
-the application touches is a catalog entry under the application's owner
-tag, a resource the application consumes is a catalog entry the application
-names from its own side, and only a resource that must itself name
-something this stack creates belongs in this stack. Both doors are
-committed in
-`tenants/aws/commercial/accounts/example-prod/aws-account-workloads/terragrunt.hcl`.
-The first is the orders team's load-test harness: the role
-`orders-api-loadtest-runner` (trust `ec2`, `AmazonSSMManagedInstanceCore`,
-read and write on its results bucket) and the bucket
-`orders-api-prod-loadtest-results` (SSE-S3, an allow list holding only that
-role, objects expiring after 30 days, access logs to the cell's
-`access-logs` bucket, `owner = orders`). No identity of this stack reads or
-writes it, so it lives in the catalog with the application's owner tag and
-needs no ordering against this stack at all. The second is shared: the data
-platform team publishes into `example-prod-reference-data` (SSE-S3,
+the application touches is a catalog cell of the application's own, under
+this cell at `apps/orders-api/catalog/` and tagged with the application's
+owner; a resource the application consumes is an entry of the account
+catalog the application names from its own side; and only a resource that
+must itself name something this stack creates belongs in this stack. Both
+doors are committed for example-prod. The first is
+`tenants/aws/commercial/accounts/example-prod/apps/orders-api/catalog/`, a
+cell of `stacks/aws-account-workloads` in a state file of its own, written
+as fragments (`terragrunt.hcl`, `iam-roles.hcl`, `s3-buckets.hcl`), holding
+the orders team's load-test harness: the role `orders-api-loadtest-runner`
+(trust `ec2`, `AmazonSSMManagedInstanceCore`, read and write on its results
+bucket), the bucket `orders-api-prod-loadtest-results` (SSE-S3, an allow
+list holding only that role, objects expiring after 30 days), and the
+bucket `orders-api-prod-access-logs` that receives its access logs (SSE-S3,
+no allow list, objects expiring after 365 days), there because the catalog
+refuses a logging target outside the cell and the account's `access-logs`
+bucket is outside it; the cell's tags say `owner = orders`. No identity of
+this stack reads or writes any of it, so it lives in the catalog under the
+app rather than in this stack, and it needs no ordering against this stack
+at all: it depends on the account catalog
+(`dependencies { paths = ["../../../aws-account-workloads"] }`) so a key or
+bucket of the account's that it names exists first, and it never names a
+resource this stack creates. The second is shared, so it stays in the
+account catalog,
+`tenants/aws/commercial/accounts/example-prod/aws-account-workloads/`: the
+data platform team publishes into `example-prod-reference-data` (SSE-S3,
 versioning, TLS-only, and nothing public fixed by the module, access logs
 to `access-logs`, `owner = data-platform`), the catalog role
 `example-reference-data-publisher`, trusted by the `production` environment
@@ -488,13 +499,14 @@ readers: the prod cell sets `reference_bucket_names =
 objects), with ARNs built from the partition and the name, so nothing is
 looked up and no dependency is declared. The direction of the reference
 follows the release order: within an account the baseline is applied first,
-then the catalog, then the app stacks (`tools/repo_lint/cells.py` orders the
-waves this way), so an app stack may name a catalog resource and the wave
-order takes care of its existence at apply, but a catalog entry never names a
-resource an app stack creates. The trap both examples teach is the reverse
-direction: a catalog bucket whose `allowed_role_names` lists
-`orders-api-prod-task` fails on the first release, because the catalog is
-applied before this stack exists and the s3-bucket module resolves every
+then the catalog cells (the account's, then the app's own), then the app
+stacks (`tools/repo_lint/cells.py` orders the waves this way), so an app
+stack may name a catalog resource and the wave order takes care of its
+existence at apply, but a catalog entry never names a resource an app stack
+creates. The trap both examples teach is the reverse direction: a catalog
+bucket whose `allowed_role_names` lists `orders-api-prod-task` fails on the
+first release, in either catalog cell, because the catalog is applied
+before this stack exists and the s3-bucket module resolves every
 allowed role by name (at plan on a steady-state run, at apply on a first
 release, when the cell's own pending roles defer the lookup), and a role that
 does not exist fails the run either way. The allow list is a deny fence on

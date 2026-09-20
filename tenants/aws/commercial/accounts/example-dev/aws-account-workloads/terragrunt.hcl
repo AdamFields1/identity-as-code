@@ -16,11 +16,26 @@
 # ../../../partition.hcl address this cell through tenants/aws/root.hcl,
 # which also supplies region (us-east-1). See docs/adr/0017.
 #
+# The cell is written as fragments so it reads like the console: this file
+# holds the includes, the source, and the tags, and each map lives in the
+# sibling file named for it (iam-roles.hcl, s3-buckets.hcl), an inputs
+# attribute and nothing else. Terragrunt merges every include's inputs into
+# one map, so the stack sees the same values it would see from one file.
+# No kms-keys.hcl, because this cell has no key.
+#
 # State key (derived by root.hcl):
 # aws/commercial/accounts/example-dev/aws-account-workloads/terraform.tfstate
 
 include "root" {
   path = find_in_parent_folders("root.hcl")
+}
+
+include "iam_roles" {
+  path = "iam-roles.hcl"
+}
+
+include "s3_buckets" {
+  path = "s3-buckets.hcl"
 }
 
 terraform {
@@ -31,24 +46,5 @@ inputs = {
   tags = {
     owner       = "example-app"
     cost_centre = "cc-2222"
-  }
-
-  service_roles = {
-    app-server = {
-      name                 = "example-app-server"
-      description          = "EC2 instances of the example application in dev: Systems Manager, and read and write access to the artifacts bucket."
-      trust                = { services = ["ec2"] }
-      aws_managed_policies = ["AmazonSSMManagedInstanceCore"]
-      bucket_access = {
-        read_write = ["example-dev-artifacts"]
-      }
-    }
-  }
-
-  buckets = {
-    artifacts = {
-      name            = "example-dev-artifacts"
-      expiration_days = 90
-    }
   }
 }

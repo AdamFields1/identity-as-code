@@ -122,6 +122,101 @@ def test_cell_shape_path_characters_and_tenant_rules(bad_root: Path, good_root: 
     assert not [c for c in codes(run(good_root, "cell-shape")) if c[1] in ("path-characters", "tenant-unknown")]
 
 
+NESTED = "tenants/aws/commercial/accounts/example-prod/apps/payments-api/catalog"
+
+
+def test_cell_shape_accepts_a_cell_written_as_fragments(good_root: Path) -> None:
+    # The app's own catalog cell carries three includes: the root and one per
+    # fragment, each a bare sibling file name. Two includes are not a
+    # duplicate-block; the fragments are held to fragment-shape instead.
+    report = run(good_root, "cell-shape", "fragment-shape")
+    assert report.ok, [f.format() for f in report.findings]
+    assert (good_root / NESTED / "iam-roles.hcl").is_file() and (good_root / NESTED / "s3-buckets.hcl").is_file()
+
+
+@pytest.mark.parametrize(
+    ("cell", "code"),
+    [
+        ("unlabeled-include", "include-unlabeled"),
+        ("slash-include", "fragment-include-path"),
+        ("two-root-includes", "include-root-duplicate"),
+        ("no-root-include", "include-root-missing"),
+        ("fragment-absent", "fragment-missing"),
+    ],
+)
+def test_cell_shape_include_rules(bad_root: Path, cell: str, code: str) -> None:
+    # One cell per include rule; each breaks only that rule, so the cell's
+    # findings are exactly the one code.
+    rel = f"tenants/azure/corp/{cell}/terragrunt.hcl"
+    found = codes(run(bad_root, "cell-shape"), f"{cell}/terragrunt.hcl")
+    assert found == [(rel, code)], found
+    finding = next(f for f in run(bad_root, "cell-shape").findings if f.path == rel)
+    assert finding.line, "include findings point at the include block"
+
+
+def test_cell_shape_missing_include_still_fires_and_fragment_files_are_not_cells(bad_root: Path) -> None:
+    found = codes(run(bad_root, "cell-shape"))
+    assert ("tenants/azure/corp/missing-things/terragrunt.hcl", "missing-include") in found
+    assert not [c for c in found if not c[0].endswith("/terragrunt.hcl")], "cell-shape reads terragrunt.hcl only"
+
+
+# ---------------------------------------------------------------------------
+# fragment-shape
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("rel", "code"),
+    [
+        ("tenants/azure/corp/fragment-resource/values.hcl", "fragment-forbidden-block"),
+        ("tenants/azure/corp/fragment-no-inputs/empty.hcl", "fragment-missing-inputs"),
+        ("tenants/azure/corp/orphan-fragment/orphan.hcl", "fragment-not-included"),
+    ],
+)
+def test_fragment_shape_rules(bad_root: Path, rel: str, code: str) -> None:
+    found = codes(run(bad_root, "fragment-shape"))
+    assert [c for c in found if c[0] == rel] == [(rel, code)], found
+    resource = next(f for f in run(bad_root, "fragment-shape").findings if f.code == "fragment-forbidden-block")
+    assert resource.message.startswith("resource:") and resource.line == 7
+    assert "values only" in resource.message
+
+
+def test_fragment_shape_reads_only_hcl_files_inside_cells(bad_root: Path, good_root: Path) -> None:
+    # A locator sits in a directory with no terragrunt.hcl and is not a
+    # fragment; a well-formed fragment beside a cell with a broken include
+    # is still a fragment and passes on its own.
+    found = codes(run(bad_root, "fragment-shape"))
+    assert {c[0] for c in found} == {
+        "tenants/azure/corp/fragment-resource/values.hcl",
+        "tenants/azure/corp/fragment-no-inputs/empty.hcl",
+        "tenants/azure/corp/orphan-fragment/orphan.hcl",
+    }
+    assert run(good_root, "fragment-shape").ok
+
+
+def test_fragment_shape_reports_a_fragment_it_cannot_read(good_copy: Path) -> None:
+    # Written at test time, as the unparsable cell is: terragrunt hclfmt
+    # --check would refuse a shipped one.
+    broken = good_copy / NESTED / "kms-keys.hcl"
+    broken.write_text("inputs = {\n  kms_keys = {\n", encoding="ascii")
+    cell = good_copy / NESTED / "terragrunt.hcl"
+    cell.write_text(cell.read_text(encoding="ascii").replace('include "s3_buckets"', 'include "kms_keys" {\n  path = "kms-keys.hcl"\n}\n\ninclude "s3_buckets"'), encoding="ascii")
+    assert codes(run(good_copy, "cell-shape", "fragment-shape")) == [(f"{NESTED}/kms-keys.hcl", "fragment-parse-error")]
+
+
+def test_fragment_shape_refuses_a_second_inputs_and_an_inputs_block(good_copy: Path) -> None:
+    twice = good_copy / NESTED / "iam-roles.hcl"
+    twice.write_text(twice.read_text(encoding="ascii") + "\ninputs = {\n  again = true\n}\n", encoding="ascii")
+    block = good_copy / NESTED / "s3-buckets.hcl"
+    block.write_text("inputs {\n  buckets = {}\n}\n", encoding="ascii")
+    found = codes(run(good_copy, "fragment-shape"))
+    assert found == [
+        (f"{NESTED}/iam-roles.hcl", "fragment-forbidden-block"),
+        (f"{NESTED}/s3-buckets.hcl", "fragment-forbidden-block"),
+        (f"{NESTED}/s3-buckets.hcl", "fragment-missing-inputs"),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # locators
 # ---------------------------------------------------------------------------
@@ -487,7 +582,7 @@ def test_cli_exit_codes(good_root: Path, bad_root: Path, tmp_path: Path) -> None
     assert report["ok"] is False
     assert report["summary"]["findings"] == len(report["findings"]) > 20
     assert set(report["summary"]["by_check"]) == set(repo_lint.CHECKS)
-    assert all(report["summary"]["by_check"][c] > 0 for c in ("cell-shape", "locators", "placeholders", "readme-tables", "runbook-params", "adr-index"))
+    assert all(report["summary"]["by_check"][c] > 0 for c in ("cell-shape", "fragment-shape", "locators", "placeholders", "readme-tables", "runbook-params", "adr-index"))
     assert _cli("--root", str(good_root), "--check", "nope").returncode == 2
     assert _cli("--root", str(tmp_path / "missing")).returncode == 2
 
@@ -553,7 +648,7 @@ def test_hcl_reader_handles_templates_heredocs_and_comments() -> None:
     assert isinstance(cells.attributes(items[0].tokens)["path"], cells.Raw)
 
 
-@pytest.mark.parametrize("text", ["include \"root\" {", "x = \"unterminated", "a = <<EOF\nnever closed\n", "{ = 1"])
+@pytest.mark.parametrize("text", ["include \"root\" {", "x = \"unterminated", "a = <<EOF\nnever closed\n", "{ = 1", "inputs = {\n  kms_keys = {\n"])
 def test_hcl_reader_raises_on_broken_input(text: str) -> None:
     with pytest.raises(cells.HclSyntaxError):
         cells.parse_items(cells.tokenize(text))

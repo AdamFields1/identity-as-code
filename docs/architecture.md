@@ -692,10 +692,15 @@ key = "aws/${path_relative_to_include()}/terraform.tfstate"
 | `tenants/aws/commercial/accounts/example-prod/aws-account-baseline` | `aws/commercial/accounts/example-prod/aws-account-baseline/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
 | `tenants/aws/commercial/accounts/example-prod/apps/payments-api` | `aws/commercial/accounts/example-prod/apps/payments-api/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
 | `tenants/aws/commercial/accounts/example-prod/apps/orders-api` | `aws/commercial/accounts/example-prod/apps/orders-api/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
+| `tenants/aws/commercial/accounts/example-prod/apps/orders-api/catalog` | `aws/commercial/accounts/example-prod/apps/orders-api/catalog/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
 | `tenants/aws/commercial/accounts/example-dev/apps/orders-api` | `aws/commercial/accounts/example-dev/apps/orders-api/terraform.tfstate` | commercial `TG_AWS_STATE_BUCKET` |
 
 `partition.hcl` and `account.hcl` play no part in the key either; an account
-cell's state sits under the account's directory because the path does.
+cell's state sits under the account's directory because the path does, and
+an application's own catalog cell (`apps/orders-api/catalog`, a cell of the
+account catalog stack) sits under the app's directory for the same reason.
+The fragment files beside a catalog cell's `terragrunt.hcl` play no part
+either: only `terragrunt.hcl` marks a cell, and a fragment has no state.
 
 `TG_AWS_STATE_BUCKET`, `TG_AWS_STATE_REGION`, and `TG_AWS_LOCK_TABLE` are set per
 GitHub environment, because a GovCloud identity cannot reach a commercial bucket

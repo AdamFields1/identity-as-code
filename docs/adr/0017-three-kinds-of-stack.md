@@ -154,6 +154,61 @@ and the read side in
 `tenants/aws/commercial/accounts/example-prod/apps/orders-api/terragrunt.hcl`
 through the orders-api stack's `reference_bucket_names`.
 
+Amended 2026-09-20: the app-owned door is a catalog cell of the
+application's own, and a catalog cell may be written as fragments. An
+application may have a catalog cell beside its app cell, at
+`tenants/aws/<partition>/accounts/<account-name>/apps/<app>/catalog/`: a
+cell of the account catalog stack (`stacks/aws-account-workloads`) and
+nothing else, the same include, source, and inputs, in a state file of its
+own whose key follows its path. It holds only what that application alone
+uses, and its tags name the application's owner, so the catalog says who
+every entry is for; an entry another application reads stays in the
+account catalog. It declares
+`dependencies { paths = ["../../../aws-account-workloads"] }`, so the
+account's shared catalog applies first and a key or bucket of the account's
+that an entry names by alias or by name exists when the cell is applied.
+It never names a resource the app stack creates: the direction rule above
+applies unchanged, and the app cell may name a bucket of this cell by name.
+Because the catalog refuses a bucket that logs to a bucket outside its own
+cell, an app-scoped cell whose buckets log carries its own access-log
+bucket. One harmless side effect of the placement: when the parent app
+cell runs, Terragrunt copies the app cell's directory into its working
+copy, the `catalog/` folder included (never the catalog's own
+`.terragrunt-cache`), and Terraform ignores a subdirectory, so nothing is
+planned twice. The worked example is the orders team's load-test harness
+(the role `orders-api-loadtest-runner` and the bucket
+`orders-api-prod-loadtest-results`), moved from the example-prod account
+catalog into
+`tenants/aws/commercial/accounts/example-prod/apps/orders-api/catalog/`
+with an access-log bucket of that cell; the reference data bucket and its
+publisher stay in the account catalog because they are shared. On a
+deployed account that move is a state move, not a destroy and create:
+remove the role, its instance profile and attachments, and the bucket
+with its configuration resources from the account cell's state, import
+them into the new cell through `tenants/aws/root.hcl`'s `imports.tf`
+hook, and hold the first plan of each cell to the `adoption` profile of
+`tools/plan_gate`; the bucket's `prevent_destroy` refuses any other
+route. A catalog
+cell may also be written as fragments, so it reads like the console:
+`terragrunt.hcl` keeps the root include, one labeled include per fragment
+whose path is the bare file name (`include "iam_roles" { path =
+"iam-roles.hcl" }`), the source, the dependencies, and inputs holding only
+what is cell-wide (the tags; on Azure also the location), and each
+fragment (`iam-roles.hcl`, `kms-keys.hcl`, `s3-buckets.hcl` on AWS;
+`resource-groups.hcl`, `managed-identities.hcl`, `key-vaults.hcl`,
+`storage-accounts.hcl` on Azure, named for the maps the cell sets) holds
+one `inputs` attribute with one map and the comments that explain its
+entries, and nothing else. Terragrunt merges every include's inputs into
+the one map the stack sees. A fragment is not a cell: it has no include
+and no source, Terragrunt never runs it on its own, and the lint's
+`fragment-shape` check holds it to values only, refusing any block or
+second attribute and any fragment no include of its cell names. The
+example-prod and example-dev AWS catalog cells and the sub-example-prod
+Azure catalog cell were converted in the same change, and each rendered
+the same inputs, state key, dependencies, and generated files before and
+after (Terragrunt `render-json`, offline), the example-prod cell less the
+two entries that moved.
+
 `tenants/aws/root.hcl` finds the two AWS locators by walking up from the
 cell with `find_in_parent_folders`, reads them with `read_terragrunt_config`,
 and generates the provider with `allowed_account_ids = ["<account_id>"]`

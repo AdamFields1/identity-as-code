@@ -6,6 +6,12 @@ A cell is a directory under ``tenants/`` that holds a ``terragrunt.hcl``.
 It is found by that file and never by depth (ADR 0017): ``corp/azure-rbac-roles``
 is a cell, so is ``corp/subscriptions/sub-example-prod/apps/data-pipeline``, and
 ``subscriptions/`` and ``subscriptions/<sub-name>/`` hold a locator, not a cell.
+A cell may sit inside another cell's directory, as an application's own
+catalog cell sits beside its app cell (``apps/orders-api/catalog``); the
+walk finds it by its own ``terragrunt.hcl`` and never counts the parent's
+directory twice. The other ``.hcl`` files beside a ``terragrunt.hcl`` are its
+fragments, each an ``inputs`` map the cell includes by name; they are part of
+their cell, not cells of their own.
 This module answers three questions about cells without running Terragrunt:
 
 1. What is this cell?  Its family (okta, azure, aws), its tenant or partition,
@@ -23,7 +29,12 @@ This module answers three questions about cells without running Terragrunt:
 
 Selection reasons (each one is a rule the repository already states):
 
-  cell-files         a file inside the cell's own directory changed.
+  cell-files         a file inside the cell's own directory changed, and no
+                     deeper cell's directory contains it: a changed path
+                     belongs to the deepest cell whose directory holds it,
+                     so a fragment of ``apps/orders-api/catalog`` selects
+                     that catalog cell and not its parent app cell, and the
+                     app cell's own terragrunt.hcl selects the app cell alone.
   stack              a file inside the stack the cell calls changed.
   module             a file inside a module the stack composes changed; module
                      sources are read from the stack's .tf files, transitively,
@@ -359,6 +370,8 @@ def parse_items(tokens: Sequence[Token]) -> list[HclItem]:
                         if depth < 0:
                             raise HclSyntaxError(f"line {tk.line}: unexpected {tk.text!r}")
                 i += 1
+            if depth > 0:
+                raise HclSyntaxError(f"line {line}: unclosed value of {name!r}")
             items.append(HclItem(name, "attribute", (), list(tokens[start:i]), line))
             continue
         raise HclSyntaxError(f"line {line}: expected '{{' or '=' after {name!r}")
@@ -507,7 +520,11 @@ def find_cell_files(root: Path) -> list[Path]:
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIR_NAMES and not d.startswith("."))
         if "terragrunt.hcl" in filenames:
             found.append(Path(dirpath) / "terragrunt.hcl")
-    return sorted(found)
+    # Sorted by the cell directory as a posix string, so a nested cell
+    # (apps/orders-api/catalog) follows the app cell it sits inside on every
+    # platform; a Path compares by parts, and the file name would put
+    # catalog/terragrunt.hcl before terragrunt.hcl.
+    return sorted(found, key=lambda p: p.parent.as_posix())
 
 
 def load_cell(root: Path, hcl_path: Path) -> Cell:
@@ -680,6 +697,21 @@ def _under(path: str, directory: str) -> bool:
     return path == directory or path.startswith(directory + "/")
 
 
+def owning_cell(path: str, cells: Sequence[Cell]) -> str | None:
+    """The path of the deepest cell whose directory holds a changed path, or None.
+
+    A cell may sit inside another cell's directory (an app's own catalog
+    cell beside its app cell), so containment alone would hand a fragment of
+    the inner cell to both. The deepest directory wins: a file belongs to
+    the cell it is closest to, which is the cell Terragrunt reads it for.
+    """
+    owner: str | None = None
+    for cell in cells:
+        if _under(path, cell.path) and (owner is None or len(cell.path) > len(owner)):
+            owner = cell.path
+    return owner
+
+
 def select_cells(
     root: Path,
     cells: Sequence[Cell],
@@ -689,12 +721,16 @@ def select_cells(
     """Map each selected cell path to the reasons it was selected.
 
     Every reason is one of the rules in the module docstring. A cell absent
-    from the result was not touched by the change.
+    from the result was not touched by the change. A changed file inside a
+    cell's directory counts for the deepest cell whose directory holds it
+    (``owning_cell``), so a nested cell's files, fragments included, never
+    select the cell they sit inside.
     """
     selected: dict[str, list[Reason]] = {}
     if select_all:
         return {c.path: [Reason("all", "")] for c in cells}
     changed_paths = normalize_changed(changed or [])
+    owners = {p: owning_cell(p, cells) for p in changed_paths}
     module_cache: dict[str, set[str]] = {}
     for cell in cells:
         reasons: list[Reason] = []
@@ -707,7 +743,7 @@ def select_cells(
             module_cache[cell.stack] = module_dirs(root, cell.stack)
         modules = module_cache.get(cell.stack or "", set())
         for p in changed_paths:
-            if _under(p, cell.path):
+            if owners[p] == cell.path:
                 reasons.append(Reason("cell-files", p))
             elif cell.stack and _under(p, cell.stack):
                 reasons.append(Reason("stack", p))

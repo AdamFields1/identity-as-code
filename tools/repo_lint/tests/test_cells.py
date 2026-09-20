@@ -16,6 +16,7 @@ TOOL = Path(cells.__file__).resolve()
 CORP = "tenants/azure/corp"
 SUB = "tenants/azure/corp/subscriptions/sub-example-prod"
 PROD = "tenants/aws/commercial/accounts/example-prod"
+NESTED = f"{PROD}/apps/payments-api/catalog"
 
 
 @pytest.fixture(scope="module")
@@ -39,10 +40,25 @@ def selected_paths(root: Path, found: list[cells.Cell], changed: list[str]) -> d
 
 def test_discovery_finds_every_cell_and_no_locator(all_cells: list[cells.Cell]) -> None:
     paths = [c.path for c in all_cells]
-    assert len(paths) == 17
+    assert len(paths) == 18
     assert all(p.startswith("tenants/") for p in paths)
     assert not any(p.endswith(("subscriptions/sub-example-prod", "accounts/example-prod")) for p in paths)
     assert paths == sorted(paths)
+    # A cell inside another cell's directory is found by its own terragrunt.hcl;
+    # its fragments are files of that cell, never cells.
+    assert NESTED in paths and f"{PROD}/apps/payments-api" in paths
+    assert not any(p.endswith(".hcl") for p in paths)
+
+
+def test_discovery_describes_a_nested_app_scoped_catalog_cell(all_cells: list[cells.Cell]) -> None:
+    c = by_path(all_cells)
+    catalog = c[NESTED]
+    assert (catalog.family, catalog.tenant, catalog.scope, catalog.scope_name) == ("aws", "commercial", "account", "example-prod")
+    assert (catalog.stack, catalog.stack_name, catalog.kind) == ("stacks/aws-account-workloads", "aws-account-workloads", "catalog")
+    assert catalog.dependencies == [f"{PROD}/aws-account-workloads"]
+    assert catalog.family_path == "commercial/accounts/example-prod/apps/payments-api/catalog"
+    assert catalog.id == "commercial-accounts-example-prod-apps-payments-api-catalog"
+    assert catalog.to_dict()["depends_on"] == [f"{PROD}/aws-account-workloads"]
 
 
 def test_discovery_describes_platform_scoped_and_app_cells(all_cells: list[cells.Cell]) -> None:
@@ -96,6 +112,21 @@ def test_reason_cell_files(good_root: Path, all_cells: list[cells.Cell]) -> None
     assert picked == {f"{CORP}/azure-pim-governance": ["cell-files"]}
 
 
+def test_reason_cell_files_goes_to_the_deepest_cell(good_root: Path, all_cells: list[cells.Cell]) -> None:
+    # A fragment of the app's own catalog cell sits inside the app cell's
+    # directory too; the deepest cell whose directory holds the path owns it.
+    fragment = selected_paths(good_root, all_cells, [f"{NESTED}/iam-roles.hcl"])
+    assert fragment == {NESTED: ["cell-files"]}
+    catalog = selected_paths(good_root, all_cells, [f"{NESTED}/terragrunt.hcl"])
+    assert catalog == {NESTED: ["cell-files"]}
+    # The app cell's own file selects the app cell alone, not the cell nested under it.
+    app = selected_paths(good_root, all_cells, [f"{PROD}/apps/payments-api/terragrunt.hcl"])
+    assert app == {f"{PROD}/apps/payments-api": ["cell-files"]}
+    assert cells.owning_cell(f"{NESTED}/s3-buckets.hcl", all_cells) == NESTED
+    assert cells.owning_cell(f"{PROD}/apps/payments-api/README.md", all_cells) == f"{PROD}/apps/payments-api"
+    assert cells.owning_cell(f"{PROD}/account.hcl", all_cells) is None
+
+
 def test_reason_stack(good_root: Path, all_cells: list[cells.Cell]) -> None:
     picked = selected_paths(good_root, all_cells, ["stacks/azure-pim-governance/main.tf"])
     assert picked == {
@@ -115,6 +146,7 @@ def test_reason_module_direct_and_transitive(good_root: Path, all_cells: list[ce
         f"{PROD}/aws-account-baseline": ["module"],
         f"{PROD}/aws-account-workloads": ["module"],
         f"{PROD}/apps/payments-api": ["module"],
+        NESTED: ["module"],
         "tenants/aws/commercial/accounts/example-dev/aws-account-baseline": ["module"],
     }
 
@@ -127,7 +159,7 @@ def test_reason_root(good_root: Path, all_cells: list[cells.Cell]) -> None:
 
 def test_reason_locator_account_partition_and_subscription(good_root: Path, all_cells: list[cells.Cell]) -> None:
     account = selected_paths(good_root, all_cells, [f"{PROD}/account.hcl"])
-    assert set(account) == {f"{PROD}/aws-account-baseline", f"{PROD}/aws-account-workloads", f"{PROD}/apps/payments-api"}
+    assert set(account) == {f"{PROD}/aws-account-baseline", f"{PROD}/aws-account-workloads", f"{PROD}/apps/payments-api", NESTED}
     assert all(v == ["locator"] for v in account.values())
 
     partition = selected_paths(good_root, all_cells, ["tenants/aws/commercial/partition.hcl"])
@@ -195,8 +227,13 @@ def test_waves_for_the_whole_tree(all_cells: list[cells.Cell]) -> None:
     assert w[f"{PROD}/aws-account-baseline"] == 1
     assert w["tenants/aws/commercial/accounts/example-dev/aws-account-baseline"] == 1
     assert w[f"{PROD}/aws-account-workloads"] == 2
-    assert w[f"{PROD}/apps/payments-api"] == 3
-    assert w["tenants/aws/govcloud/aws-identity-center"] == 4
+    # the app's own catalog cell after the account catalog it depends on
+    # (its dependencies block), and before the app cell, as any catalog of
+    # the account is; the gated partition after all of it
+    assert w[NESTED] == 3
+    assert w[NESTED] > w[f"{PROD}/aws-account-workloads"]
+    assert w[f"{PROD}/apps/payments-api"] == 4
+    assert w["tenants/aws/govcloud/aws-identity-center"] == 5
 
 
 def test_waves_of_a_subset_start_at_zero(all_cells: list[cells.Cell]) -> None:
@@ -255,7 +292,7 @@ def test_cli_github_matrix_is_one_json_line(good_root: Path) -> None:
     assert result.returncode == 0
     assert result.stdout.count("\n") == 1
     matrix = json.loads(result.stdout)
-    assert matrix["cell_count"] == 17 and matrix["wave_count"] == 6
+    assert matrix["cell_count"] == 18 and matrix["wave_count"] == 6
     assert set(matrix["families"]) == {"okta", "azure", "aws"}
     assert len(matrix["families"]["okta"]) == 2
 
@@ -263,7 +300,7 @@ def test_cli_github_matrix_is_one_json_line(good_root: Path) -> None:
 def test_cli_changed_family_filter_and_explain(good_root: Path) -> None:
     result = _cli("--root", str(good_root), "--family", "aws", "--changed", "tenants/aws/root.hcl", "--explain")
     assert result.returncode == 0
-    assert "6 cell(s) in 5 wave(s)" in result.stdout
+    assert "7 cell(s) in 6 wave(s)" in result.stdout
     assert "tenants/aws/govcloud/aws-identity-center: selected, root (tenants/aws/root.hcl)" in result.stdout
     assert "tenants/okta/dev" not in result.stdout
     quiet = _cli("--root", str(good_root), "--changed", "README.md", "--explain")

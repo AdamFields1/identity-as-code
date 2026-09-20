@@ -16,9 +16,16 @@ Checks:
   cell-shape       tenants/**/terragrunt.hcl holds include, terraform (with a
                    source under stacks/ that exists), inputs, and optionally
                    dependencies (whose paths resolve to cells under tenants/);
-                   nothing else. Its directory names are ones a
+                   nothing else. Exactly one include is the family root
+                   (find_in_parent_folders("root.hcl")); any other include is
+                   labeled and names a fragment, a sibling .hcl file by its
+                   bare name, that exists. Its directory names are ones a
                    workflow can use as names, and its tenant is one the
                    family's promotion order knows.
+  fragment-shape   every .hcl file beside a terragrunt.hcl other than the cell
+                   itself holds one inputs attribute and nothing else, parses,
+                   and is included by the cell: a fragment is values only,
+                   like the cell it belongs to.
   locators         partition.hcl, account.hcl, and subscription.hcl are locals
                    only, sit where ADR 0017 puts them, and say what they must.
   placeholders     account ids are one repeated digit; GUIDs are a repeated
@@ -394,6 +401,62 @@ _CELL_FORBIDDEN: dict[str, str] = {
     "provider": "provider configuration is generated once by the family root.hcl (README, Three layers)",
 }
 
+# The one include every cell carries: the family root, found by name. The
+# tokenizer keeps a string's contents without its quotes, so the Raw text of
+# ``find_in_parent_folders("root.hcl")`` reads as below.
+_ROOT_INCLUDE_RE = re.compile(r"^find_in_parent_folders \( root\.hcl \)$")
+# What a fragment include may name: a sibling file by its bare name, ending in
+# .hcl, made of the characters a cell's own directory name may be made of.
+_FRAGMENT_NAME_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*\.hcl$")
+
+
+def _is_root_include(value: object) -> bool:
+    return isinstance(value, _cells.Raw) and bool(_ROOT_INCLUDE_RE.match(value.text))
+
+
+def _fragment_name(value: object) -> str | None:
+    """The bare sibling file name an include path names, or None when it names anything else."""
+    if not isinstance(value, str):
+        return None
+    name = _cells.unquote(value)
+    if "${" in name or not _FRAGMENT_NAME_RE.match(name) or name == "terragrunt.hcl":
+        return None
+    return name
+
+
+def _include_findings(ctx: Context, rel: str, includes: list[_cells.HclItem]) -> list[Finding]:
+    """The rules about a cell's include blocks.
+
+    A cell includes the family root exactly once, by
+    ``find_in_parent_folders("root.hcl")`` under any label. Every other
+    include is a fragment: a sibling .hcl file named by its bare name (no
+    directory, no template, never terragrunt.hcl) that exists, and that
+    ``fragment-shape`` then holds to values only. When a cell carries more
+    than one include, every one of them is labeled, which is Terragrunt's
+    own rule for a file with several.
+    """
+    findings: list[Finding] = []
+    check = "cell-shape"
+    cell_dir = (ctx.root / rel).parent
+    roots = 0
+    for it in includes:
+        if len(includes) > 1 and not it.labels:
+            findings.append(Finding(check, "include-unlabeled", rel, it.line, "an include without a label; a cell with more than one include labels every one of them (include \"root\", include \"iam_roles\")"))
+        value = _cells.attributes(it.tokens).get("path")
+        if _is_root_include(value):
+            roots += 1
+            if roots == 2:
+                findings.append(Finding(check, "include-root-duplicate", rel, it.line, "the family root is included more than once; a cell includes root.hcl exactly once"))
+            continue
+        name = _fragment_name(value)
+        if name is None:
+            findings.append(Finding(check, "fragment-include-path", rel, it.line, "an include path is find_in_parent_folders(\"root.hcl\") or the bare name of a sibling .hcl fragment (no directory, no template, not terragrunt.hcl); a fragment sits beside its cell and nowhere else"))
+        elif not (cell_dir / name).is_file():
+            findings.append(Finding(check, "fragment-missing", rel, it.line, f"include names {name}, which does not exist beside the cell"))
+    if includes and roots == 0:
+        findings.append(Finding(check, "include-root-missing", rel, includes[0].line, "no include's path is find_in_parent_folders(\"root.hcl\"); every cell includes the family root, which generates its state and provider configuration (ADR 0002)"))
+    return findings
+
 
 def _cell_path_findings(rel: str) -> list[Finding]:
     """The two rules about where a cell sits, not what it holds.
@@ -421,7 +484,7 @@ def _cell_path_findings(rel: str) -> list[Finding]:
 
 
 def check_cell_shape(ctx: Context) -> list[Finding]:
-    """cell-shape: a cell is an include, a source pointing at a stack, and an inputs map, nothing else, under a tenant the promotion order names and directory names a workflow can use (README "Three layers"; ADR 0002; ADR 0018)."""
+    """cell-shape: a cell is an include of the root, a source pointing at a stack, and an inputs map, nothing else, with any further include naming a sibling fragment by its bare name, under a tenant the promotion order names and directory names a workflow can use (README "Three layers"; ADR 0002; ADR 0018)."""
     findings: list[Finding] = []
     check = "cell-shape"
     for rel in ctx.text_files():
@@ -446,11 +509,15 @@ def check_cell_shape(ctx: Context) -> list[Finding]:
                 findings.append(Finding(check, "inputs-not-attribute", rel, it.line, "inputs must be an attribute (inputs = { ... }), not a block"))
             elif it.name != "inputs" and it.kind != "block":
                 findings.append(Finding(check, "not-a-block", rel, it.line, f"{it.name} must be a block, not an attribute"))
-            if seen[it.name] == 2 and it.name in _CELL_ALLOWED:
+            if seen[it.name] == 2 and it.name in _CELL_ALLOWED and it.name != "include":
                 findings.append(Finding(check, "duplicate-block", rel, it.line, f"{it.name} appears more than once"))
         for required in ("include", "terraform", "inputs"):
             if required not in seen:
                 findings.append(Finding(check, f"missing-{required}", rel, None, f"a cell must have {required} (ADR 0002)"))
+        # More than one include is allowed, and each one is either the family
+        # root or a fragment beside the cell; _include_findings says which
+        # rule a cell breaks.
+        findings.extend(_include_findings(ctx, rel, [it for it in items if it.name == "include" and it.kind == "block"]))
         terraform_blocks = [it for it in items if it.name == "terraform" and it.kind == "block"]
         if terraform_blocks:
             first = terraform_blocks[0]
@@ -492,6 +559,68 @@ def check_cell_shape(ctx: Context) -> list[Finding]:
                         findings.append(Finding(check, "dependency-outside-tenants", rel, first.line, f"dependency {dependency} resolves to {resolved or 'outside the repository'}; a cell depends on another cell under tenants/"))
                     elif not (ctx.root / resolved / "terragrunt.hcl").is_file():
                         findings.append(Finding(check, "dependency-missing", rel, first.line, f"dependency {dependency} resolves to {resolved}, which is not a cell (no terragrunt.hcl there); a cell moved one level down leaves its dependents' paths one level short"))
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# fragment-shape
+# ---------------------------------------------------------------------------
+
+
+def cell_dirs(files: Iterable[str]) -> set[str]:
+    """The directories under tenants/ that hold a terragrunt.hcl, from a file list."""
+    return {rel[: -len("/terragrunt.hcl")] for rel in files if rel.startswith("tenants/") and rel.endswith("/terragrunt.hcl")}
+
+
+def _included_fragments(ctx: Context, cell_rel: str) -> set[str] | None:
+    """The bare file names a cell's include blocks name, or None when the cell cannot be read."""
+    try:
+        items = _cells.parse_items(_cells.tokenize(ctx.read_text(cell_rel)))
+    except _cells.HclSyntaxError:
+        return None
+    names: set[str] = set()
+    for it in items:
+        if it.name == "include" and it.kind == "block":
+            value = _cells.attributes(it.tokens).get("path")
+            if isinstance(value, str):
+                names.add(_cells.unquote(value))
+    return names
+
+
+def check_fragment_shape(ctx: Context) -> list[Finding]:
+    """fragment-shape: a fragment is values only, like the cell it belongs to: every .hcl file beside a cell's terragrunt.hcl holds one inputs attribute and nothing else, and the cell includes it (README "Three layers"; ADR 0002)."""
+    findings: list[Finding] = []
+    check = "fragment-shape"
+    dirs = cell_dirs(ctx.files)
+    included: dict[str, set[str] | None] = {}
+    for rel in ctx.text_files():
+        directory, _, name = rel.rpartition("/")
+        if directory not in dirs or name == "terragrunt.hcl" or not name.endswith(".hcl"):
+            continue
+        try:
+            items = _cells.parse_items(_cells.tokenize(ctx.read_text(rel)))
+        except _cells.HclSyntaxError as exc:
+            findings.append(Finding(check, "fragment-parse-error", rel, None, f"cannot read as HCL: {exc}"))
+            continue
+        inputs = 0
+        for it in items:
+            if it.name == "inputs" and it.kind == "attribute":
+                inputs += 1
+                if inputs == 2:
+                    findings.append(Finding(check, "fragment-forbidden-block", rel, it.line, "inputs appears more than once; a fragment holds exactly one inputs attribute"))
+            elif it.name == "inputs":
+                findings.append(Finding(check, "fragment-forbidden-block", rel, it.line, "inputs must be an attribute (inputs = { ... }), not a block"))
+            elif it.name in _CELL_FORBIDDEN:
+                findings.append(Finding(check, "fragment-forbidden-block", rel, it.line, f"{it.name}: {_CELL_FORBIDDEN[it.name]}; a fragment is values only, like the cell it belongs to"))
+            else:
+                findings.append(Finding(check, "fragment-forbidden-block", rel, it.line, f"{it.name}: a fragment holds one inputs attribute and nothing else, not an include, a source, a dependency, or a generate; those belong to the cell's terragrunt.hcl (ADR 0002)"))
+        if inputs == 0:
+            findings.append(Finding(check, "fragment-missing-inputs", rel, None, "a fragment holds one inputs attribute (inputs = { <one map> = { ... } }); a file with nothing to merge is not a fragment"))
+        if directory not in included:
+            included[directory] = _included_fragments(ctx, f"{directory}/terragrunt.hcl")
+        names = included[directory]
+        if names is not None and name not in names:
+            findings.append(Finding(check, "fragment-not-included", rel, None, f"no include of {directory}/terragrunt.hcl names {name}; a fragment Terragrunt never merges is dead values, so include it (include \"<label>\" {{ path = \"{name}\" }}) or remove it"))
     return findings
 
 
@@ -1053,6 +1182,7 @@ def check_adr_index(ctx: Context) -> list[Finding]:
 
 CHECKS: dict[str, CheckFn] = {
     "cell-shape": check_cell_shape,
+    "fragment-shape": check_fragment_shape,
     "locators": check_locators,
     "placeholders": check_placeholders,
     "ascii": check_ascii,

@@ -200,9 +200,50 @@ steady-state run, at apply on a first release, when this cell's own pending
 roles defer the lookup), and a role that does not exist fails the run either
 way. A bucket that app stacks read therefore has no allow list and its
 readers' identity policies decide, while a bucket only a role of this cell
-touches (the load-test results in the example-prod cell) keeps one. An entry
-that belongs to an application team rather than to the account carries that
-team's owner tag over the cell's, so the catalog says who it is for.
+touches (the load-test results in the orders-api app's own catalog cell,
+below) keeps one. An entry that belongs to an application team rather than
+to the account carries that team's owner tag over the cell's, so the
+catalog says who it is for; when everything an application owns is its own,
+it gets a cell of its own.
+
+## Cells under an application
+
+A cell of this stack may also sit under an application, at
+`tenants/aws/<partition>/accounts/<account-name>/apps/<app>/catalog/`,
+beside the app cell. It is the first of the two doors above made a cell of
+its own: the same stack, the same three blocks, its own state file (the key
+follows the path), holding only what that application alone uses, with tags
+that name the application's owner so the catalog says who every entry is
+for. An entry another application or another team reads stays in the
+account's cell. The committed one,
+`tenants/aws/commercial/accounts/example-prod/apps/orders-api/catalog/`,
+holds the orders team's load-test runner and its results bucket, which used
+to be two team-tagged entries in the account's cell. On a deployed account
+that move is a state move, not a destroy and create: remove the role, its
+instance profile and attachments, and the bucket with its configuration
+resources from the account cell's state, import them into the new cell
+through `tenants/aws/root.hcl`'s `imports.tf` hook, and hold the first
+plan of each cell to the `adoption` profile of `tools/plan_gate`; the
+bucket's `prevent_destroy` refuses any other route.
+
+Three rules make it. It declares
+`dependencies { paths = ["../../../aws-account-workloads"] }`, so the
+account's shared catalog applies first and a key of the account's that an
+entry names by alias, or a bucket it names by name, exists when the cell is
+applied; `terragrunt run --all` and the release train's waves both honour
+the block. It never names a resource the app stack creates: the direction
+rule is unchanged, the app cell may name a bucket of this cell by name, and
+an allow list here that names the app's task role fails the first release
+exactly as it would in the account's cell. And because this stack refuses a
+bucket that logs to a bucket outside its own cell, an app-scoped cell whose
+buckets log carries its own access-log bucket (`orders-api-prod-access-logs`
+in the example: SSE-S3, no allow list, objects expiring after 365 days)
+rather than logging to the account's.
+
+One harmless side effect of the placement: when the parent app cell runs,
+Terragrunt copies the app cell's directory into its working copy, the
+`catalog/` folder included (never the catalog's own `.terragrunt-cache`).
+Terraform ignores a subdirectory, so nothing is planned twice.
 
 ## What this stack refuses
 
@@ -274,7 +315,16 @@ A cell for this stack looks like this. The committed one,
 `tenants/aws/commercial/accounts/example-prod/aws-account-workloads/terragrunt.hcl`,
 differs in the details: one key named `app` that both roles use, a `config`
 bucket under that key with an allow list and access logging, and its own
-tags.
+tags. It is also written as fragments, so it reads like the console: its
+`terragrunt.hcl` holds the root include, one labeled include per fragment
+(`include "iam_roles" { path = "iam-roles.hcl" }`), the source, and the
+tags, and `iam-roles.hcl`, `kms-keys.hcl`, and `s3-buckets.hcl` beside it
+each hold `inputs = { <one map> = { ... } }` with the comments that explain
+the entries, and nothing else. Terragrunt merges every include's inputs
+into the one map this stack sees, so the committed cell and the single
+file below give the stack the same input. A fragment is not a cell: it
+has no include and no source, Terragrunt never runs it on its own, and the
+lint's `fragment-shape` check holds it to values only.
 
 ```hcl
 include "root" {

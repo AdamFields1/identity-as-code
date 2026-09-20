@@ -46,7 +46,11 @@ same for all three ([ADR 0017](docs/adr/0017-three-kinds-of-stack.md)).
 **Cells answer where, and with what values.** A tenant is a folder of cells. Each
 cell is one stack applied for one tenant, and it contains exactly three things: an
 include of the shared root, a source pointing at the stack, and an inputs map of
-values. No resources, no data sources, no conditionals, no IDs. A cell calls a
+values; a catalog cell may split that map into fragment files beside it
+(`iam-roles.hcl`, `kms-keys.hcl`, `s3-buckets.hcl`), each an inputs attribute
+holding one map and nothing else, brought in by a labeled include and merged by
+Terragrunt into the one map the stack sees. No resources, no data sources, no
+conditionals, no IDs. A cell calls a
 stack, never a module, so composition never leaks into the tenant layer and a
 tenant file can be reviewed by someone who has never opened the admin console.
 Whatever is identical for every cell (state backend, provider generation, the
@@ -138,7 +142,7 @@ for each cloud, and two app stacks for each.
 | Stack | Composes | Cells |
 |-------|----------|-------|
 | `stacks/aws-account-baseline` | password policy, EBS default encryption, S3 Block Public Access, GuardDuty, and Access Analyzer, then a key, the trail bucket (and its access log bucket), and the multi-region trail | `tenants/aws/commercial/accounts/{example-prod,example-dev}/aws-account-baseline` |
-| `stacks/aws-account-workloads` | the AWS catalog: service roles, then KMS keys, then S3 buckets, wired to each other by name and checked at plan | `tenants/aws/commercial/accounts/{example-prod,example-dev}/aws-account-workloads` |
+| `stacks/aws-account-workloads` | the AWS catalog: service roles, then KMS keys, then S3 buckets, wired to each other by name and checked at plan | `tenants/aws/commercial/accounts/{example-prod,example-dev}/aws-account-workloads`, and one application's own entries in `tenants/aws/commercial/accounts/example-prod/apps/orders-api/catalog`, applied after the account's |
 | `stacks/apps/aws/payments-api` | two ECS task roles, a key, an artifacts bucket, an encrypted log group, and a SecureString parameter namespace, every name derived from the application and the environment | `tenants/aws/commercial/accounts/example-prod/apps/payments-api` |
 | `stacks/apps/aws/orders-api` | a key, then a task role, a task execution role, and an image publisher role trusted by one GitHub environment of one repository through OIDC, an ECR repository the execution role pulls from and the publisher pushes to, an encrypted log group, and a SecureString parameter namespace, every name derived from the application and the environment; no bucket, and the compute is left to the application's pipeline | `tenants/aws/commercial/accounts/{example-prod,example-dev}/apps/orders-api` |
 | `stacks/azure-subscription-baseline` | a locked resource group and a Log Analytics workspace (or an existing workspace by name), then Defender plans, the activity log export, and initiative assignments | `tenants/azure/corp/subscriptions/{sub-example-prod,sub-example-dev}/azure-subscription-baseline` |
@@ -204,7 +208,12 @@ identity-as-code/
           sub-example-prod/
             subscription.hcl    locator: subscription id and name; not a cell
             azure-subscription-baseline/terragrunt.hcl
-            azure-subscription-workloads/terragrunt.hcl
+            azure-subscription-workloads/
+              terragrunt.hcl    the root include, one labeled include per fragment, the source, the dependency, the location and tags
+              resource-groups.hcl     fragment: the resource_groups map, values only, merged into the cell's inputs by Terragrunt (docs/adr/0017)
+              managed-identities.hcl  fragment: the identities map
+              key-vaults.hcl          fragment: the key_vaults map
+              storage-accounts.hcl    fragment: the storage_accounts map
             apps/               app cells, one directory per application (docs/adr/0017)
               data-pipeline/terragrunt.hcl
               orders-api/terragrunt.hcl
@@ -226,14 +235,26 @@ identity-as-code/
           example-prod/
             account.hcl         locator: account id and name; not a cell
             aws-account-baseline/terragrunt.hcl
-            aws-account-workloads/terragrunt.hcl
+            aws-account-workloads/
+              terragrunt.hcl    the root include, one labeled include per fragment, the source, the tags
+              iam-roles.hcl     fragment: the service_roles map, values only, merged into the cell's inputs by Terragrunt (docs/adr/0017)
+              kms-keys.hcl      fragment: the kms_keys map
+              s3-buckets.hcl    fragment: the buckets map
             apps/               app cells, one directory per application (docs/adr/0017)
               payments-api/terragrunt.hcl
-              orders-api/terragrunt.hcl
+              orders-api/
+                terragrunt.hcl  the app cell
+                catalog/        the app's own catalog cell: what orders-api alone uses, applied after the account catalog (docs/adr/0017)
+                  terragrunt.hcl
+                  iam-roles.hcl
+                  s3-buckets.hcl
           example-dev/
             account.hcl
             aws-account-baseline/terragrunt.hcl
-            aws-account-workloads/terragrunt.hcl
+            aws-account-workloads/
+              terragrunt.hcl
+              iam-roles.hcl
+              s3-buckets.hcl    no kms-keys.hcl: the cell has no key, so there is no fragment for one
             apps/
               orders-api/terragrunt.hcl
       govcloud/
@@ -345,28 +366,40 @@ rather than papered over. See
 
 **A resource an application needs and that is not in its app stack goes
 through one of two doors, and wiring decides which.** A resource nothing of
-the application touches is a catalog entry carrying the application's
-owner tag; a resource the application consumes is a catalog entry the
-application names from its own side; only a resource that must itself name
-something the app stack creates belongs in the app stack. Both doors are
-committed in
-`tenants/aws/commercial/accounts/example-prod/aws-account-workloads/terragrunt.hcl`:
+the application touches is a catalog cell of the application's own, under
+its app cell (`apps/orders-api/catalog/`); a resource the application
+consumes is an entry of the account catalog the application names from
+its own side; only a resource that must itself name something the app
+stack creates belongs in the app stack. The app-owned door is a cell of
+the same catalog stack (`stacks/aws-account-workloads`) with its own state
+file, and three rules make it: it holds only what the application alone
+uses and its tags name the application's owner, so the catalog says who
+every entry is for; it never names a resource the app stack creates; and
+it declares a dependency on the account catalog, so a key or bucket of
+the account's that it names by alias or by name exists first. Both doors
+are committed for example-prod. The first is
+`tenants/aws/commercial/accounts/example-prod/apps/orders-api/catalog/`:
 the orders team's load-test harness (the role `orders-api-loadtest-runner`
 and the bucket `orders-api-prod-loadtest-results`, `owner = orders`, which
-no identity of the orders-api stack reads or writes) and the data
-platform's `example-prod-reference-data` bucket with its publisher role
-(`owner = data-platform`, no allow list), which
-`tenants/aws/commercial/accounts/example-prod/apps/orders-api/terragrunt.hcl`
-reads by setting `reference_bucket_names = ["example-prod-reference-data"]`.
+no identity of the orders-api stack reads or writes), with an access-log
+bucket of its own, because the catalog refuses a bucket that logs outside
+its cell. The second is the data platform's `example-prod-reference-data`
+bucket with its publisher role (`owner = data-platform`, no allow list) in
+`tenants/aws/commercial/accounts/example-prod/aws-account-workloads/`, the
+account catalog, because more than one application reads it; the read
+side is
+`tenants/aws/commercial/accounts/example-prod/apps/orders-api/terragrunt.hcl`,
+which sets `reference_bucket_names = ["example-prod-reference-data"]`.
 The direction of any reference between cells follows the release order:
-within an account the baseline is applied first, then the catalog, then
-the app stacks, so an app stack may name a catalog resource by name, and a
-catalog entry never names a resource an app stack creates. The task role's
-policy builds the bucket ARN from the partition and the name, so nothing
-is looked up at plan and the wave order takes care of existence at apply.
-The trap both examples teach is the reverse direction: a catalog bucket
-whose allow list names the app's task role fails on the first release,
-because the catalog is applied before the app exists. See
+within an account the baseline is applied first, then the catalog cells,
+then the app stacks, so an app stack may name a catalog resource by name,
+and a catalog entry never names a resource an app stack creates. The task
+role's policy builds the bucket ARN from the partition and the name, so
+nothing is looked up at plan and the wave order takes care of existence
+at apply. The trap both examples teach is the reverse direction: a
+catalog bucket whose allow list names the app's task role fails on the
+first release, because the catalog is applied before the app exists,
+whether that catalog cell sits beside the app or under the account. See
 [ADR 0017](docs/adr/0017-three-kinds-of-stack.md).
 
 **Automation is code, dry by default, on a managed identity.** The work that

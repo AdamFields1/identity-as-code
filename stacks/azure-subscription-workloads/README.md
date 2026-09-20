@@ -177,7 +177,19 @@ either data-plane block.
 A cell for this stack looks like this. The committed one,
 `tenants/azure/corp/subscriptions/sub-example-prod/azure-subscription-workloads/terragrunt.hcl`,
 differs in the details: its own tags, and a Log Analytics workspace named on
-the vault and the account for their audit logs.
+the vault and the account for their audit logs. It is also written as
+fragments, so it reads like the portal: its `terragrunt.hcl` holds the root
+include, one labeled include per fragment
+(`include "resource_groups" { path = "resource-groups.hcl" }`), the source,
+the dependency on the baseline, and the location and tags, and
+`resource-groups.hcl`, `managed-identities.hcl`, `key-vaults.hcl`, and
+`storage-accounts.hcl` beside it each hold `inputs = { <one map> = { ... } }`
+with the comments that explain the entries, and nothing else. Terragrunt
+merges every include's inputs into the one map this stack sees, so the
+committed cell and the single file below give the stack the same input. A
+fragment is not a cell: it has no include and no source, Terragrunt never
+runs it on its own, and the lint's `fragment-shape` check holds it to
+values only.
 
 ```hcl
 include "root" {

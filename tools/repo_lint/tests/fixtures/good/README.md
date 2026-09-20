@@ -31,7 +31,7 @@ the runbooks call graph.microsoft.com, and the Owner role id
 | `stacks/apps/azure/data-pipeline` | `tenants/azure/corp/subscriptions/sub-example-prod/apps/data-pipeline` |
 | `stacks/aws-identity-center` | `tenants/aws/{commercial,govcloud}/aws-identity-center` |
 | `stacks/aws-account-baseline` | `tenants/aws/commercial/accounts/{example-prod,example-dev}/aws-account-baseline` |
-| `stacks/aws-account-workloads` | `tenants/aws/commercial/accounts/example-prod/aws-account-workloads` |
+| `stacks/aws-account-workloads` | `tenants/aws/commercial/accounts/example-prod/aws-account-workloads`, `tenants/aws/commercial/accounts/example-prod/apps/payments-api/catalog` (the app's own catalog cell, in fragments) |
 | `stacks/apps/aws/payments-api` | `tenants/aws/commercial/accounts/example-prod/apps/payments-api` |
 
 The AWS access group for the prod account is AWS-COM-111111111111-Admin and
@@ -78,6 +78,11 @@ identity-as-code/
           example-prod/
             account.hcl         locator: account id and name
             apps/
-              payments-api/terragrunt.hcl
+              payments-api/
+                terragrunt.hcl
+                catalog/        the app's own catalog cell, in fragments
+                  terragrunt.hcl
+                  iam-roles.hcl
+                  s3-buckets.hcl
   docs/                         decision records
 ```
