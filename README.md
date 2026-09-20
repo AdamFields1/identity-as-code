@@ -3,7 +3,8 @@
 Identity configuration managed the same way as infrastructure: typed Terraform
 modules, deployable stacks, values-only tenant cells, and a release train that
 promotes a change from the first tenant to the gated one through a human approval.
-Four providers, one layout: Okta authentication policy, Entra ID (app registrations,
+Four providers, one layout: Okta authentication policy and an application catalog
+(SAML and OIDC apps behind app sign-on policies), Entra ID (app registrations,
 Conditional Access, PIM for groups and directory roles, and federation to AWS),
 Azure resource RBAC (custom roles, PIM policies, eligibilities), and AWS IAM
 Identity Center (permission sets and group assignments, in commercial and GovCloud).
@@ -77,6 +78,9 @@ decision records carry the reasoning that the commits do not.
 | Sign-on policy and rules (session, MFA, network conditions) | `modules/okta/session-policy` | `okta_policy_signon`, `okta_policy_rule_signon` |
 | MFA enrollment policy and rules | `modules/okta/mfa-policy` | `okta_policy_mfa`, `okta_policy_rule_mfa` |
 | Password policy and rules (complexity, age, lockout, recovery) | `modules/okta/password-policy` | `okta_policy_password`, `okta_policy_rule_password` |
+| App sign-on policies and rules: factors, re-authentication, phishing-resistant and hardware-protected possession, zones and groups by name, catch-all DENY, single-factor access only with a stated reason | `modules/okta/app-signon-policy` | `okta_app_signon_policy`, `okta_app_signon_policy_rule` |
+| Custom SAML 2.0 apps with signed responses and assertions (RSA-SHA256), typed attribute statements, https-only endpoints, no inline hook, group assignments by name, vendor onboarding values as outputs | `modules/okta/app-saml` | `okta_app_saml`, `okta_app_group_assignments` |
+| OIDC apps typed web, browser, native, or service: grant and response types derived from the type (code only on the redirect-based types, never implicit), PKCE, `private_key_jwt` by default, refresh token rotation, wildcards off, the client secret never in state, group assignments by name | `modules/okta/app-oauth` | `okta_app_oauth`, `okta_app_group_assignments` |
 | App registrations and service principals with a drift-detection import contract | `modules/entra/app-registration` | `azuread_application`, `azuread_service_principal`, `azuread_application_federated_identity_credential`, `azuread_app_role_assignment` |
 | Named locations, authentication strengths, and Conditional Access policies | `modules/entra/conditional-access` | `azuread_named_location`, `azuread_authentication_strength_policy`, `azuread_conditional_access_policy` |
 | Role-assignable security groups | `modules/entra/security-group` | `azuread_group` |
@@ -110,12 +114,13 @@ decision records carry the reasoning that the commits do not.
 | PIM activation settings of undeclared Azure pairs and Entra directory roles, group eligibility end dates, restricted-offer subscriptions, the runbooks' own source and job health | `automation/runbooks/*` on `automation/lib/Runbook.Common.ps1` | none: Graph, ARM, and Storage calls from Automation jobs, delivered by `stacks/azure-automation` |
 | Entra authentication methods policy (per-method state, targets, and settings; registration campaign; report suspicious activity; system-preferred MFA), groups by display name | `policies/entra/authentication-methods` with `scripts/Set-AuthenticationMethods.ps1` and `automation/runbooks/Invoke-AuthenticationMethodsDrift.ps1` | none: Graph `PATCH` on patch-only singletons; delivered as `azurerm_automation_variable_string` and a pipeline job |
 
-Nine platform stacks compose those modules into deployable units, with a cell in
+Ten platform stacks compose those modules into deployable units, with a cell in
 every tenant or partition of their family:
 
 | Stack | Composes | Cells |
 |-------|----------|-------|
 | `stacks/okta-config` | the four Okta policy modules | `tenants/okta/dev/okta-config`, `tenants/okta/prod/okta-config` |
+| `stacks/okta-applications` | the Okta application catalog: app sign-on policies first, then the SAML and OIDC apps bound to a policy by key, with cross-map checks at plan (the policy key exists, an admin-tier app names a phishing-resistant policy, no label twice) | `tenants/okta/dev/okta-applications`, `tenants/okta/prod/okta-applications`, each after the org's `okta-config` cell, whose zones the rules name |
 | `stacks/entra-app-registrations` | app registrations and service principals with a drift-detection import contract | `tenants/azure/corp/entra-app-registrations` |
 | `stacks/entra-conditional-access` | named locations, authentication strengths, and Conditional Access policies | `tenants/azure/{corp,subsidiary}/entra-conditional-access` |
 | `stacks/entra-pim-governance` | role-assignable groups, PIM for groups policies, and Entra role eligibilities | `tenants/azure/{corp,subsidiary}/entra-pim-governance` |
@@ -155,7 +160,7 @@ for each cloud, and two app stacks for each.
 ```
 identity-as-code/
   modules/
-    okta/                       network-zone, session-policy, mfa-policy, password-policy
+    okta/                       network-zone, session-policy, mfa-policy, password-policy, app-signon-policy, app-saml, app-oauth
     entra/                      app registration, Conditional Access, PIM for groups, AWS Identity Center app, and Graph app role grant building blocks
     azure/                      rbac-role-definition, pim-role-policy, pim-eligible-assignment, automation-account, automation-runbooks, workload-role-assignment, backup-storage,
                                 resource-group, managed-identity, key-vault, container-registry, storage-account, subscription-baseline
@@ -163,6 +168,7 @@ identity-as-code/
                                 log-group, ssm-parameter-namespace, ecr-repository
   stacks/                       units of deployment: compose modules, resolve names to IDs
     okta-config/
+    okta-applications/          the Okta catalog: app sign-on policies, SAML and OIDC apps as values (docs/adr/0020)
     entra-app-registrations/
     entra-conditional-access/
     entra-pim-governance/
@@ -192,8 +198,20 @@ identity-as-code/
   tenants/
     okta/                       one directory per tenant, one cell per stack inside it, values only
       root.hcl                  S3 state, Okta provider generation, adoption hook
-      dev/okta-config/terragrunt.hcl
-      prod/okta-config/terragrunt.hcl
+      dev/
+        okta-config/terragrunt.hcl
+        okta-applications/
+          terragrunt.hcl        the root include, one labeled include per fragment, the source, the dependency on okta-config, the org
+          signon-policies.hcl   fragment: the signon_policies map, values only, merged into the cell's inputs by Terragrunt (docs/adr/0020)
+          saml-apps.hcl         fragment: the saml_apps map
+          oauth-apps.hcl        fragment: the oauth_apps map; dev allows a localhost redirect on the console, prod never does
+      prod/
+        okta-config/terragrunt.hcl
+        okta-applications/
+          terragrunt.hcl
+          signon-policies.hcl
+          saml-apps.hcl         adds the admin-tier vendor console on the phishing-resistant policy
+          oauth-apps.hcl        adds the service client, which names no policy
     azure/                      one directory per tenant, one cell per stack inside it
       root.hcl                  Azure Storage state, azurerm + azuread provider generation from ARM_TENANT_ID and the subscription locator, adoption hook
       corp/
@@ -260,7 +278,7 @@ identity-as-code/
       govcloud/
         partition.hcl
         aws-identity-center/terragrunt.hcl
-  .github/workflows/            PR validation and release trains: okta-* (dev -> prod), azure-* (corp, then its subscriptions -> subsidiary), aws-* (commercial, then its accounts -> govcloud,
+  .github/workflows/            PR validation and release trains: okta-* (dev -> prod, in the waves cells.py computes), azure-* (corp, then its subscriptions -> subsidiary), aws-* (commercial, then its accounts -> govcloud,
                                 in the waves cells.py computes), plus automation-tests (the Pester suite on 5.1 with Pester 3.4.0 and 4.10.1, and on 7 with 4.10.1) and repo-lint (the tool tests, repo_lint, and cells on every pull request)
   scripts/                      PowerShell helpers to adopt an existing tenant, export drift, import live PIM eligibilities, and enforce the authentication methods policy
   tests/                        zero-change import gate: the rule; tools/plan_gate is the program
@@ -282,8 +300,8 @@ workflows call it ([ADR 0018](docs/adr/0018-ci-tooling-in-python.md)).
 | Tool | What it does | Where it runs |
 |------|--------------|---------------|
 | `tools/plan_gate` | Holds a plan's JSON (`terragrunt show -json`) to a profile: `adoption` (every entry a no-op, importing or not, and the import count matching `imports.tf`), `convergence` (no change and no import), `scoped-replace` (only allowlisted addresses may change), or `report`. Counts a replace as one replace, lists drift apart from changes, names addresses and attributes and never a value. Exit 0 pass, 1 findings, 2 usage or input error. | After every pull request plan, `convergence` as a verdict in the step summary and the comment, and a red job on any import block, because `imports.tf` never rides in a pull request. `adoption`, the zero-change import gate of `tests/README.md`, on the workstation that holds `imports.tf`, at step 3 of adopting a tenant; a `workflow_dispatch` job for it is sketched in the tool's README and not written yet. `report` on every AWS release plan and on the merge-time plan the reviewer approves at the Okta and Azure gates |
-| `tools/repo_lint/repo_lint.py` | Eight checks, each carrying the sentence of this README or an ADR it comes from: cell shape, locators, placeholders, ASCII, no secrets, README tables, runbook parameters, the ADR index | `repo-lint` on every pull request and push to `main` |
-| `tools/repo_lint/cells.py` | Discovers the cells, selects the ones a change touches, and orders them into waves from the rules the trains state | `repo-lint` (every cell, so a cycle is caught early); the AWS release train, whose plan and apply jobs run the waves it emits |
+| `tools/repo_lint/repo_lint.py` | Nine checks, each carrying the sentence of this README or an ADR it comes from: cell shape, fragment shape, locators, placeholders, ASCII, no secrets, README tables, runbook parameters, the ADR index | `repo-lint` on every pull request and push to `main` |
+| `tools/repo_lint/cells.py` | Discovers the cells, selects the ones a change touches, and orders them into waves from the rules the trains state | `repo-lint` (every cell, so a cycle is caught early); the AWS and Okta release trains, whose plan and apply jobs run the waves it emits, and the Okta pull request workflow, which plans the cells it selects for a change |
 
 The runbooks stay PowerShell because Azure Automation runs them: the line is
 where the code runs, not a preference (ADR 0018).
@@ -320,7 +338,7 @@ cell says only which region it is. State bucket and OIDC role are per partition
 and arrive through the environment. See
 [ADR 0009](docs/adr/0009-partition-aware-aws-cells.md).
 
-**Three kinds of stack, and addressing lives in locator files.** The nine
+**Three kinds of stack, and addressing lives in locator files.** The ten
 stacks above are platform stacks: every tenant of a family has a cell for
 each, and the tenant's values are the only difference. The next requests were
 not tenant-wide: one account needs a role a CI runner can assume, one
@@ -349,6 +367,35 @@ no generated file, because a saved plan carries the generated provider and
 the plan and apply environments name different roles; it is named in the
 profile, which the workflow writes on the runner. See
 [ADR 0017](docs/adr/0017-three-kinds-of-stack.md).
+
+**Applications are catalog shapes with guardrails.** Onboarding an
+application over SAML or OIDC is the everyday work of an identity engineer,
+and `stacks/okta-applications` makes it an entry in a values-only fragment:
+a cell says what the vendor's guide or the developer asks for (the ACS URL
+and audience, the redirect URIs, the NameID format, the attribute
+statements or the groups claim, the groups, the policy key) and three
+modules carry the rest as shapes. What a cell cannot say is fixed and
+stated in each module's README: SAML responses and assertions signed with
+RSA-SHA256, https endpoints with no wildcard and no inline hook; an OIDC
+app's grant and response types derived from its type, so the implicit flow
+cannot be requested, PKCE on every redirect-based client, `private_key_jwt` on web
+and service clients from a JWKS URI the cell supplies, refresh token
+rotation, and `wildcard_redirect` disabled. No secret enters state by
+construction: `omit_secret` is fixed true, so even a client that opts into
+a shared secret with `allow_client_secret = true` has its secret minted by
+Okta and read once from the console, never from a plan or an output. Groups
+are named, never id'd, and are provisioned into Okta by the corp Entra
+tenant as the upstream identity provider, so a name that does not exist
+fails the plan rather than producing an app nobody can open. Sign-on
+policies are tiers a cell picks by key (`standard-workforce`,
+`admin-phishing-resistant`), the policy module creates every catch-all rule
+with DENY so each path to ALLOW is a rule in the diff, and the stack
+refuses an admin-tier app whose policy accepts a phishable factor on any
+ALLOW rule. After apply, the `saml_vendor_onboarding` output holds the
+entity id, SSO URL, metadata URL, and signing certificate a vendor
+configures, and `oauth_client_ids` the client id a developer configures,
+none of which is secret. See
+[ADR 0020](docs/adr/0020-applications-are-catalog-shapes-with-guardrails.md).
 
 **The container pair is the worked example of parity.** `apps/aws/orders-api`
 and `apps/azure/orders-api` give one application everything a container
@@ -497,14 +544,14 @@ so the zero-change import gate is a program with one line per offending
 address rather than a paragraph, a pull request plan that carries an import
 block is a red job, and the plan a reviewer approves at a gate has already
 been counted, replaces and drift included. `tools/repo_lint/cells.py` finds the cells and orders them
-into waves, and the AWS release train reads that instead of listing its
-cells. All three are Python 3.11 or later with no dependency outside the
+into waves, and the AWS and Okta release trains read that instead of listing
+their cells. All three are Python 3.11 or later with no dependency outside the
 standard library, because every runner has that and nothing else; the
 runbooks stay PowerShell because Azure Automation runs them. See
 [ADR 0018](docs/adr/0018-ci-tooling-in-python.md).
 
-**Path is environment, via Terragrunt.** `tenants/okta/dev/okta-config`,
-`tenants/okta/prod/okta-config`, `tenants/azure/corp`, `tenants/azure/subsidiary`,
+**Path is environment, via Terragrunt.** `tenants/okta/dev`,
+`tenants/okta/prod`, `tenants/azure/corp`, `tenants/azure/subsidiary`,
 `tenants/aws/commercial`, and `tenants/aws/govcloud` are the only places those
 words appear. There is no
 `environment` variable threaded through modules and no
@@ -568,7 +615,15 @@ Identity Center cell, then every account's baseline, then the catalogs, then
 the app stacks, and the GovCloud gate waits for the last wave; the Azure
 train still lists its cells and applies the corp subscription cells after
 the corp tenant cells, baseline first because the other cells name the
-workspace it creates, and the subsidiary gate waits for them too.
+workspace it creates, and the subsidiary gate waits for them too. The Okta
+train reads `cells.py` the same way the AWS train does: dev's `okta-config`
+cell applies before its `okta-applications` cell plans, because the
+sign-on policy rules name zones the config cell creates; prod's config cell
+is planned at merge time and its saved plan waits at the gate; and prod's
+applications cell is planned fresh after the gate and applied under
+`prod-apply` without a second approval, because the config cell it depends
+on has just applied and a merge-time plan of it would be stale by
+construction.
 
 That ordering has a review cost worth stating: a pull request that introduces
 a custom role **and** its first use shows a failing plan for the consuming
@@ -580,8 +635,8 @@ practical, name the expected red plan in the pull request description.
 ## How to use it
 
 Prerequisites: Terraform 1.9 or later and Terragrunt 0.77 or later. For the Okta
-tree, an S3 bucket and DynamoDB table for state and an Okta API token with policy
-and zone scopes. For the Azure tree, a storage account and container for state with
+tree, an S3 bucket and DynamoDB table for state and an Okta API token with policy,
+zone, application, and group-read scopes. For the Azure tree, a storage account and container for state with
 shared key access disabled, `az login` as an identity that holds Storage Blob Data
 Contributor on the container and the RBAC needed at the scopes you manage. For the
 AWS tree, an S3 bucket and DynamoDB table per partition and an SSO session or
@@ -599,6 +654,12 @@ cd tenants/okta/dev/okta-config
 terragrunt init
 terragrunt plan
 ```
+
+The applications cell of the same org (`tenants/okta/dev/okta-applications`)
+is the same commands after the config cell has applied, because its sign-on
+policy rules name the zones that cell creates and the groups the corp Entra
+tenant provisions; a name that does not exist yet fails the plan with the
+name in the error.
 
 Azure and Entra:
 
@@ -712,8 +773,11 @@ zero-change gate applied to an object Terraform cannot hold.
 - Users and group memberships. The directory of record owns those. Every stack
   looks groups up by name; only the Entra PIM stack creates groups, and only the
   role-assignable ones it governs.
-- Okta applications, SAML/OIDC integrations, and app sign-on policies.
-- Okta authentication policies for Identity Engine apps (a natural next stack).
+- Okta authorization servers, scopes, claims, and token lifetimes (a later
+  catalog); SWA, bookmark, and basic-auth apps; user profile mappings; and
+  the apps' own provisioning of users and groups into the vendor. The
+  applications stack creates SAML and OIDC apps and the policies in front of
+  them, and stops there.
 - Standing (active) Azure role assignments for people. If a person needs
   standing access, that is a design conversation, not a map entry. The only
   standing grantees are the runbook tier identities, which cannot activate
@@ -767,10 +831,40 @@ plan is expected to fail and why. The same applies to any cell that names a
 custom role: `azure-pim-governance` and `azure-automation` both do
 (ADR 0005).
 
-The Okta tree was written without a Terraform binary. HCL was reviewed by hand for
+The Okta policy tree (`modules/okta/network-zone`, `session-policy`,
+`mfa-policy`, `password-policy`, and `stacks/okta-config`) was written without a
+Terraform binary. HCL was reviewed by hand for
 syntax and provider attribute names against the okta/okta 4.x provider
 documentation. Before first use, run `terraform validate` on each module and the
 stack and confirm attribute names against the provider version you pin.
+
+The Okta application catalog (`modules/okta/app-signon-policy`, `app-saml`,
+`app-oauth`, `stacks/okta-applications`, and the two `okta-applications`
+cells) was written with Terraform 1.16 available: every module and the stack
+passes `terraform init -backend=false` and `terraform validate` against the
+pinned provider (okta/okta 4.20.0, recorded in the committed
+`.terraform.lock.hcl` files), and every attribute and block was checked
+against that version's schema. The refusals were proven with `terraform
+test` and a mocked Okta provider, one run per case: 24 runs on the policy
+module (one accepted shape asserting the constraints JSON, the DENY
+catch-all, the phishing-resistant fact, and the zone and group lookups, and
+23 refusals each confirmed to fail on its own message), 30 on the SAML
+module (two accepted shapes and 28 refusals), 30 on the OIDC module (one
+catalog of five apps across all four types and 29 refusals, each also run
+without `expect_failures` to read its message), and 8 on the stack (the full
+composition of the worked examples, then an admin app on a standard policy
+over SAML and over OIDC, an admin app with no policy, a missing policy key on
+each map, and a label repeated within a map and across the two). Both cells
+were rendered offline with `terragrunt render-json` to confirm the state key,
+the `okta-config` dependency, and the five merged input keys. Those
+harnesses are not committed. What only a live org can confirm: that the
+provider applies `catch_all = false` on creation so the system rule is
+created with DENY (the policy module README says to check it once after an
+import), that a policy whose constraints JSON omits the `OPTIONAL` flags
+shows no diff on the second plan, that `omit_secret` leaves the client
+secret out of state on the first apply of a client that opted into one, and
+that the group names the cells carry have been provisioned by the upstream
+identity provider before the first plan.
 
 The Azure tree (`modules/azure/*`, `stacks/azure-*`) was written with Terraform 1.16
 available and every module and stack passes `terraform init -backend=false` and
@@ -890,15 +984,17 @@ lists it as a property but not in the updatable table), and that the
 
 The tooling layer (`tools/plan_gate`, `tools/repo_lint`) was written and run
 here, against this tree, with Python 3.12: 80 plan_gate tests and
-77 repo_lint and cells tests pass under pytest with no network and no
+97 repo_lint and cells tests pass under pytest with no network and no
 Terraform binary, `repo_lint.py --all` passes over every file (its first run
 found the two `[string[]]` runbook parameters the automation README had
 excepted, now semicolon strings like every other list, with Pester tests for
 the parsers, and the Pester suite still passes under Windows PowerShell 5.1
-with Pester 3.4.0), and `cells.py` finds the 27 cells in six waves. What
-only a run on GitHub can confirm: the matrix the AWS release train reads
-from `cells.py`, the `fromJson` indexing of its wave jobs and the skip rules
-between them, and the step summary and pull request comment the plan gate
+with Pester 3.4.0), and `cells.py` finds the 30 cells in six waves. What
+only a run on GitHub can confirm: the matrix the AWS and Okta release trains
+read from `cells.py`, the `fromJson` indexing of their wave jobs and the skip
+rules between them (the Okta train's `jq` split of the waves was emulated in
+Python against the real `cells.py` output, because `jq` was not on the
+workstation), and the step summary and pull request comment the plan gate
 writes; every workflow file parses as YAML and was reviewed by reading, not
 run.
 

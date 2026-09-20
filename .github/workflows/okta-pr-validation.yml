@@ -1,15 +1,38 @@
-# PR validation for the Okta identity-as-code tree.
+# PR validation for the Okta identity-as-code tree (tenants/okta, which holds
+# one org per tenant directory and, under each, one cell per stack: the
+# okta-config cell of policies and zones and the okta-applications cell of
+# sign-on policies, SAML apps, and OIDC apps; docs/adr/0017).
 #
-# Static checks run on every PR that touches Terraform or Terragrunt. A speculative
-# plan runs only for tenants affected by the change: a tenant whose own directory
-# changed, or every tenant when shared code (modules, stack, root.hcl) changed.
+# Static checks run on every PR that touches Terraform or Terragrunt under the
+# Okta paths. A speculative plan runs only for cells affected by the change,
+# and which cells those are is not decided here: tools/repo_lint/cells.py
+# reads the changed paths and selects a cell whose own files changed, every
+# cell of a stack that changed, every cell of every stack that composes a
+# module that changed, and every cell of the family when root.hcl changed
+# (tools/repo_lint/README.md, "Which cells a change touches"). The one rule
+# cells.py leaves to the workflow is the workflow itself: an edit to this
+# file re-plans everything, said in the detect step below.
 #
-# Credentials: AWS via OIDC (no static keys), Okta token from the "<tenant>-plan"
-# GitHub environment, which holds a read-only token. See docs/adr/0003.
+# Credentials: AWS via GitHub OIDC for the S3 state backend (no static keys),
+# Okta token from the "<tenant>-plan" GitHub environment, which holds a
+# read-only token. The provider reads OKTA_API_TOKEN from the environment on
+# its own; tenants/okta/root.hcl generates no api_token, so the token is in
+# no generated file, no plan artifact, and no state. See docs/adr/0003.
 #
-# Plans run one job per tenant instead of a single `terragrunt run --all plan` so
-# each tenant gets its own artifact, its own PR comment, and its own concurrency
-# group. The result is the same set of plans with better attribution.
+# Identity per environment: TG_STATE_BUCKET, TG_STATE_REGION, TG_LOCK_TABLE,
+# and AWS_PLAN_ROLE_ARN are repository variables a "<tenant>-plan"
+# environment may override. GitHub resolves vars.X to the environment value
+# when one exists, but only inside a job that names the environment, which
+# is why the state variables are set at job level here and not at workflow
+# level.
+#
+# Plans run one job per cell instead of a single `terragrunt run --all plan` so
+# each cell gets its own artifact, its own PR comment, and its own concurrency
+# group. The result is the same set of plans with better attribution. A
+# pull request plan of the applications cell resolves network zones and
+# groups by name against the org as it is, so a zone the same pull request
+# adds to okta-config plans red in okta-applications until the config cell
+# has applied on merge; name the expected red plan in the description.
 
 name: okta-pr-validation
 
@@ -17,9 +40,10 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "modules/**"
-      - "stacks/**"
-      - "tenants/**"
+      - "modules/okta/**"
+      - "stacks/okta-*/**"
+      - "tenants/okta/**"
+      - "tools/repo_lint/cells.py"
       - ".tflint.hcl"
       - ".github/workflows/okta-pr-validation.yml"
 
@@ -87,21 +111,26 @@ jobs:
           output_format: cli,sarif
           output_file_path: console,checkov.sarif
 
-      - name: terraform validate (modules and stack)
+      - name: terraform validate (modules and stacks)
         run: |
           set -euo pipefail
-          for dir in modules/okta/* stacks/*; do
+          for dir in modules/okta/* stacks/okta-*; do
+            [ -d "$dir" ] || continue
             echo "::group::validate $dir"
             terraform -chdir="$dir" init -backend=false -input=false >/dev/null
             terraform -chdir="$dir" validate
             echo "::endgroup::"
           done
 
-  changed-tenants:
-    name: Detect affected tenants
+  changed-cells:
+    name: Detect affected cells
     runs-on: ubuntu-latest
+    # Reads the checkout and nothing else: no OIDC token for a job that
+    # never calls a cloud.
+    permissions:
+      contents: read
     outputs:
-      tenants: ${{ steps.detect.outputs.tenants }}
+      cells: ${{ steps.detect.outputs.cells }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -115,40 +144,53 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          # A tenant holds one cell today, okta-config, so the matrix is per
-          # tenant and any change under tenants/okta/<tenant>/ selects that
-          # tenant. A second stack in a tenant moves this workflow onto
-          # tools/repo_lint/cells.py, which the Azure and AWS workflows use.
           changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
-          all_tenants=$(find tenants/okta -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
 
-          if echo "$changed" | grep -Eq '^(modules/|stacks/|tenants/okta/root\.hcl|\.github/workflows/okta-pr-validation\.yml)'; then
-            selected="$all_tenants"
+          # cells.py selects the cells the changed paths touch and says why
+          # (--explain in the log). The paths go in on standard input, the
+          # stdin form of --changed, so a file name is never a shell word.
+          # A change to this workflow is not a reason cells.py knows, so it
+          # is the one case decided here: plan everything.
+          if echo "$changed" | grep -Eq '^\.github/workflows/okta-pr-validation\.yml$'; then
+            matrix=$(python3 tools/repo_lint/cells.py --root . --family okta --all --github-matrix)
           else
-            selected=$(echo "$changed" | grep -E '^tenants/okta/[^/]+/' | cut -d/ -f3 | sort -u || true)
+            matrix=$(echo "$changed" | python3 tools/repo_lint/cells.py --root . --family okta --changed-from - --github-matrix)
           fi
+          echo "$changed" | python3 tools/repo_lint/cells.py --root . --family okta --changed-from - --explain
 
-          json=$(printf '%s\n' $selected | grep -v '^$' | jq -R . | jq -sc .)
-          echo "Affected tenants: $json"
-          echo "tenants=$json" >> "$GITHUB_OUTPUT"
+          # The plan job names its environment <tenant>-plan from the cell's
+          # tenant, a contract with cells.py. cells.py already refuses a
+          # tenant its promotion order does not name; this line holds the
+          # job to the two names that exist in repository settings, because
+          # an environment GitHub has never been told about is created on
+          # first use with no reviewers and no branch policy.
+          echo "$matrix" | jq -e '[.cells[].tenant] | all(. == "dev" or . == "prod")' >/dev/null \
+            || { echo '::error::a cell sits under a tenant this workflow has no environments for; only dev and prod exist'; exit 1; }
+
+          # Matrix entries carry the cell's path under tenants/okta
+          # (family_path), a filesystem-safe id for artifact and concurrency
+          # names, and the tenant for the environment lookup.
+          cells=$(echo "$matrix" | jq -c '[.cells[] | {family_path, id, tenant}]')
+          echo "Affected cells: $cells"
+          echo "cells=$cells" >> "$GITHUB_OUTPUT"
 
   plan:
-    name: plan ${{ matrix.tenant }}
-    needs: [static-checks, changed-tenants]
+    name: plan ${{ matrix.cell.family_path }}
+    needs: [static-checks, changed-cells]
     # Plans need the state backend; static checks above do not, so they always run.
-    if: needs.changed-tenants.outputs.tenants != '[]' && vars.TG_STATE_BUCKET != ''
+    if: needs.changed-cells.outputs.cells != '[]' && vars.TG_STATE_BUCKET != ''
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        tenant: ${{ fromJson(needs.changed-tenants.outputs.tenants) }}
+        cell: ${{ fromJson(needs.changed-cells.outputs.cells) }}
 
     # Read-only token lives in the "<tenant>-plan" environment. Sharing the
-    # per-tenant concurrency group with the release workflow means a PR plan never
+    # per-cell concurrency group with the release workflow means a PR plan never
     # fights a release apply for the state lock.
-    environment: ${{ matrix.tenant }}-plan
+    environment: ${{ matrix.cell.tenant }}-plan
     concurrency:
-      group: okta-tenant-${{ matrix.tenant }}
+      group: okta-cell-${{ matrix.cell.id }}
       cancel-in-progress: false
 
     env:
@@ -157,9 +199,10 @@ jobs:
       TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
       TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
       PLAN_DIR: ${{ github.workspace }}/plans
-      # The tenant's name as data: run blocks read $TENANT, never the
-      # matrix expression, so a directory name is never script.
-      TENANT: ${{ matrix.tenant }}
+      # The cell's names as data: run blocks read $CELL_PATH and $CELL_ID,
+      # never the matrix expression, so a directory name is never script.
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      CELL_ID: ${{ matrix.cell.id }}
 
     steps:
       - name: Checkout
@@ -183,18 +226,19 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ vars.TG_STATE_REGION }}
-          role-session-name: okta-pr-plan-${{ matrix.tenant }}-${{ github.run_id }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-pr-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
 
       - name: terragrunt plan
-        # The tenant's one cell. See the note in changed-tenants above.
-        working-directory: tenants/okta/${{ matrix.tenant }}/okta-config
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
           mkdir -p "$PLAN_DIR"
           terragrunt init -input=false
-          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/$TENANT.tfplan"
-          terragrunt show -no-color "$PLAN_DIR/$TENANT.tfplan" > "$PLAN_DIR/$TENANT.txt"
-          terragrunt show -json "$PLAN_DIR/$TENANT.tfplan" > "$PLAN_DIR/$TENANT.json"
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/$CELL_ID.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.txt"
+          terragrunt show -json "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.json"
 
       - name: Plan gate
         id: gate
@@ -211,28 +255,28 @@ jobs:
         # JSON could not be read) and fails the job either way.
         run: |
           set -euo pipefail
-          json="$PLAN_DIR/$TENANT.json"
-          gate="$PLAN_DIR/$TENANT.gate.json"
+          json="$PLAN_DIR/$CELL_ID.json"
+          gate="$PLAN_DIR/$CELL_ID.gate.json"
           code=0
           python3 tools/plan_gate/plan_gate.py convergence "$json" \
-            --github-summary --title "Okta plan: $TENANT" \
+            --github-summary --title "Okta plan: $CELL_PATH" \
             --json > "$gate" || code=$?
           echo "profile=convergence" >> "$GITHUB_OUTPUT"
           case "$code" in
             0) echo "verdict=pass" >> "$GITHUB_OUTPUT" ;;
             1) echo "verdict=fail" >> "$GITHUB_OUTPUT" ;;
             *)
-              echo "::error::plan_gate exited $code for $TENANT: the plan JSON could not be gated. A workflow bug, not a tenant problem."
+              echo "::error::plan_gate exited $code for $CELL_PATH: the plan JSON could not be gated. A workflow bug, not a tenant problem."
               exit "$code"
               ;;
           esac
           imports=$(jq '.plans[0].counts.imports' "$gate")
           if [ "$imports" -gt 0 ]; then
-            echo "::error::$TENANT plans $imports import block(s) in a pull request. Imports are adopted from a workstation through imports.tf behind the zero-change gate (tests/README.md), never from a pull request; remove the import blocks."
+            echo "::error::$CELL_PATH plans $imports import block(s) in a pull request. Imports are adopted from a workstation through imports.tf behind the zero-change gate (tests/README.md), never from a pull request; remove the import blocks."
             exit 1
           fi
           if [ "$code" -ne 0 ]; then
-            echo "::warning::$TENANT is not converged: this plan changes the tenant. The addresses are in the step summary."
+            echo "::warning::$CELL_PATH is not converged: this plan changes the tenant. The addresses are in the step summary."
           fi
 
       - name: Summarise plan
@@ -242,7 +286,7 @@ jobs:
         # not see.
         run: |
           set -euo pipefail
-          json="$PLAN_DIR/$TENANT.json"
+          json="$PLAN_DIR/$CELL_ID.json"
           add=$(jq '[.resource_changes[]? | select(.change.actions | index("create"))] | length' "$json")
           change=$(jq '[.resource_changes[]? | select(.change.actions | index("update"))] | length' "$json")
           destroy=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' "$json")
@@ -257,12 +301,12 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: okta-plan-${{ matrix.tenant }}-pr${{ github.event.pull_request.number }}
+          name: okta-plan-${{ matrix.cell.id }}-pr${{ github.event.pull_request.number }}
           path: |
-            ${{ env.PLAN_DIR }}/${{ matrix.tenant }}.tfplan
-            ${{ env.PLAN_DIR }}/${{ matrix.tenant }}.txt
-            ${{ env.PLAN_DIR }}/${{ matrix.tenant }}.json
-            ${{ env.PLAN_DIR }}/${{ matrix.tenant }}.gate.json
+            ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.tfplan
+            ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.txt
+            ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.json
+            ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.gate.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -277,9 +321,10 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const tenant = process.env.TENANT;
-            const marker = `<!-- okta-plan:${tenant} -->`;
-            const planPath = `${process.env.PLAN_DIR}/${tenant}.txt`;
+            const cellPath = process.env.CELL_PATH;
+            const cellId = process.env.CELL_ID;
+            const marker = `<!-- okta-plan:${cellId} -->`;
+            const planPath = `${process.env.PLAN_DIR}/${cellId}.txt`;
             let plan = fs.readFileSync(planPath, 'utf8');
             const limit = 60000;
             if (plan.length > limit) {
@@ -293,7 +338,7 @@ jobs:
               : `Plan gate (${process.env.GATE_PROFILE}): **not converged**, this plan changes the tenant; the addresses are in the job's step summary`;
             const body = [
               marker,
-              `### Okta plan for \`${tenant}\``,
+              `### Okta plan for \`${cellPath}\``,
               `Add: **${process.env.ADD}**, Change: **${process.env.CHANGE}**, Destroy: **${process.env.DESTROY}**${destroyWarning}`,
               gateLine,
               '',
@@ -305,7 +350,7 @@ jobs:
               '',
               '</details>',
               '',
-              `Artifact: \`okta-plan-${tenant}-pr${context.issue.number}\``
+              `Artifact: \`okta-plan-${cellId}-pr${context.issue.number}\``
             ].join('\n');
 
             const { data: comments } = await github.rest.issues.listComments({

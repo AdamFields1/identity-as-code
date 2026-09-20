@@ -123,15 +123,24 @@ def test_cell_shape_path_characters_and_tenant_rules(bad_root: Path, good_root: 
 
 
 NESTED = "tenants/aws/commercial/accounts/example-prod/apps/payments-api/catalog"
+OKTA_APPS = "tenants/okta/dev/okta-applications"
+OKTA_APPS_FRAGMENTS = ("signon-policies.hcl", "saml-apps.hcl", "oauth-apps.hcl")
 
 
 def test_cell_shape_accepts_a_cell_written_as_fragments(good_root: Path) -> None:
     # The app's own catalog cell carries three includes: the root and one per
     # fragment, each a bare sibling file name. Two includes are not a
-    # duplicate-block; the fragments are held to fragment-shape instead.
+    # duplicate-block; the fragments are held to fragment-shape instead. The
+    # Okta application catalog cell carries four: the root and one per map.
     report = run(good_root, "cell-shape", "fragment-shape")
     assert report.ok, [f.format() for f in report.findings]
     assert (good_root / NESTED / "iam-roles.hcl").is_file() and (good_root / NESTED / "s3-buckets.hcl").is_file()
+    assert all((good_root / OKTA_APPS / name).is_file() for name in OKTA_APPS_FRAGMENTS)
+    okta = good_root / OKTA_APPS / "terragrunt.hcl"
+    included = [it.labels[0] for it in cells.read_hcl(okta) if it.kind == "block" and it.name == "include"]
+    assert included == ["root", "signon_policies", "saml_apps", "oauth_apps"]
+    found = cells.load_cell(good_root, okta)
+    assert found.dependencies == ["tenants/okta/dev/okta-config"]
 
 
 @pytest.mark.parametrize(

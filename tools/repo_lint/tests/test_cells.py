@@ -17,6 +17,9 @@ CORP = "tenants/azure/corp"
 SUB = "tenants/azure/corp/subscriptions/sub-example-prod"
 PROD = "tenants/aws/commercial/accounts/example-prod"
 NESTED = f"{PROD}/apps/payments-api/catalog"
+OKTA_DEV = "tenants/okta/dev/okta-config"
+OKTA_PROD = "tenants/okta/prod/okta-config"
+OKTA_APPS = "tenants/okta/dev/okta-applications"
 
 
 @pytest.fixture(scope="module")
@@ -40,13 +43,16 @@ def selected_paths(root: Path, found: list[cells.Cell], changed: list[str]) -> d
 
 def test_discovery_finds_every_cell_and_no_locator(all_cells: list[cells.Cell]) -> None:
     paths = [c.path for c in all_cells]
-    assert len(paths) == 18
+    assert len(paths) == 19
     assert all(p.startswith("tenants/") for p in paths)
     assert not any(p.endswith(("subscriptions/sub-example-prod", "accounts/example-prod")) for p in paths)
     assert paths == sorted(paths)
     # A cell inside another cell's directory is found by its own terragrunt.hcl;
     # its fragments are files of that cell, never cells.
     assert NESTED in paths and f"{PROD}/apps/payments-api" in paths
+    # The Okta application catalog cell is a fragment cell beside okta-config;
+    # its three fragments are files of that cell, never cells.
+    assert OKTA_APPS in paths
     assert not any(p.endswith(".hcl") for p in paths)
 
 
@@ -63,10 +69,20 @@ def test_discovery_describes_a_nested_app_scoped_catalog_cell(all_cells: list[ce
 
 def test_discovery_describes_platform_scoped_and_app_cells(all_cells: list[cells.Cell]) -> None:
     c = by_path(all_cells)
-    okta = c["tenants/okta/dev/okta-config"]
+    okta = c[OKTA_DEV]
     assert (okta.family, okta.tenant, okta.scope, okta.scope_name) == ("okta", "dev", "tenant", None)
     assert (okta.stack, okta.stack_name, okta.kind) == ("stacks/okta-config", "okta-config", "platform")
     assert okta.family_path == "dev/okta-config" and okta.id == "dev-okta-config" and okta.gated is False
+    assert okta.dependencies == []
+    # The application catalog cell of the same org: tenant-wide, platform
+    # kind, and ordered after okta-config by its dependencies block because
+    # its policies name the zones that cell creates.
+    apps = c[OKTA_APPS]
+    assert (apps.family, apps.tenant, apps.scope, apps.scope_name) == ("okta", "dev", "tenant", None)
+    assert (apps.stack, apps.stack_name, apps.kind) == ("stacks/okta-applications", "okta-applications", "platform")
+    assert apps.dependencies == [OKTA_DEV]
+    assert apps.family_path == "dev/okta-applications" and apps.id == "dev-okta-applications" and apps.gated is False
+    assert apps.to_dict()["depends_on"] == [OKTA_DEV]
 
     roles = c[f"{CORP}/azure-rbac-roles"]
     assert roles.kind == "definitions" and roles.dependencies == []
@@ -91,6 +107,11 @@ def test_module_dirs_are_transitive_and_ignore_registry_sources(good_root: Path)
     assert cells.module_dirs(good_root, "stacks/aws-account-workloads") == {"modules/aws/s3-bucket", "modules/aws/kms-key"}
     assert cells.module_dirs(good_root, "stacks/apps/aws/payments-api") == {"modules/aws/kms-key", "modules/aws/s3-bucket"}
     assert cells.module_dirs(good_root, "stacks/okta-config") == {"modules/okta/network-zone"}
+    assert cells.module_dirs(good_root, "stacks/okta-applications") == {
+        "modules/okta/app-signon-policy",
+        "modules/okta/app-saml",
+        "modules/okta/app-oauth",
+    }
 
 
 def test_classify_stack_by_path_and_name() -> None:
@@ -99,6 +120,7 @@ def test_classify_stack_by_path_and_name() -> None:
     assert cells.classify_stack("stacks/aws-account-baseline", "aws-account-baseline") == "baseline"
     assert cells.classify_stack("stacks/azure-subscription-workloads", "azure-subscription-workloads") == "catalog"
     assert cells.classify_stack("stacks/okta-config", "okta-config") == "platform"
+    assert cells.classify_stack("stacks/okta-applications", "okta-applications") == "platform"
     assert cells.classify_stack(None, "unknown") == "platform"
 
 
@@ -127,12 +149,36 @@ def test_reason_cell_files_goes_to_the_deepest_cell(good_root: Path, all_cells: 
     assert cells.owning_cell(f"{PROD}/account.hcl", all_cells) is None
 
 
+def test_reason_cell_files_for_a_fragment_of_the_okta_applications_cell(good_root: Path, all_cells: list[cells.Cell]) -> None:
+    # Onboarding an application is an edit to one fragment of the catalog
+    # cell; the fragment selects that cell alone, not the okta-config cell
+    # it depends on and not the prod cell of the same family.
+    for fragment in ("signon-policies.hcl", "saml-apps.hcl", "oauth-apps.hcl"):
+        picked = selected_paths(good_root, all_cells, [f"{OKTA_APPS}/{fragment}"])
+        assert picked == {OKTA_APPS: ["cell-files"]}, fragment
+        assert cells.owning_cell(f"{OKTA_APPS}/{fragment}", all_cells) == OKTA_APPS
+    assert selected_paths(good_root, all_cells, [f"{OKTA_APPS}/terragrunt.hcl"]) == {OKTA_APPS: ["cell-files"]}
+
+
 def test_reason_stack(good_root: Path, all_cells: list[cells.Cell]) -> None:
     picked = selected_paths(good_root, all_cells, ["stacks/azure-pim-governance/main.tf"])
     assert picked == {
         f"{CORP}/azure-pim-governance": ["stack"],
         "tenants/azure/subsidiary/azure-pim-governance": ["stack"],
     }
+
+
+def test_reason_stack_and_module_select_the_okta_applications_cell(good_root: Path, all_cells: list[cells.Cell]) -> None:
+    # Only the dev org carries the catalog cell in the fixture, so a change
+    # to the stack or to one of its three modules selects that cell alone;
+    # the okta-config cells compose none of them, and the zone module
+    # selects only the okta-config cells.
+    assert selected_paths(good_root, all_cells, ["stacks/okta-applications/main.tf"]) == {OKTA_APPS: ["stack"]}
+    for module in ("app-signon-policy", "app-saml", "app-oauth"):
+        picked = selected_paths(good_root, all_cells, [f"modules/okta/{module}/main.tf"])
+        assert picked == {OKTA_APPS: ["module"]}, module
+    zone = selected_paths(good_root, all_cells, ["modules/okta/network-zone/main.tf"])
+    assert zone == {OKTA_DEV: ["module"], OKTA_PROD: ["module"]}
 
 
 def test_reason_module_direct_and_transitive(good_root: Path, all_cells: list[cells.Cell]) -> None:
@@ -208,8 +254,12 @@ def wave_index(waves: list[list[cells.Cell]]) -> dict[str, int]:
 
 def test_waves_for_the_whole_tree(all_cells: list[cells.Cell]) -> None:
     w = wave_index(cells.order_waves(all_cells))
-    # okta: dev before prod (promotion order)
-    assert w["tenants/okta/dev/okta-config"] == 0 and w["tenants/okta/prod/okta-config"] == 1
+    # okta: the application catalog cell after okta-config in the same
+    # tenant (its dependencies block), and prod after every dev cell
+    # (promotion order), so the prod okta-config waits for the dev catalog
+    assert w[OKTA_DEV] == 0
+    assert w[OKTA_APPS] == 1 and w[OKTA_APPS] > w[OKTA_DEV]
+    assert w[OKTA_PROD] == 2
     # azure corp: definitions before their consumers, dependencies honoured
     assert w[f"{CORP}/azure-rbac-roles"] == 0
     assert w[f"{CORP}/entra-conditional-access"] == 0
@@ -292,9 +342,12 @@ def test_cli_github_matrix_is_one_json_line(good_root: Path) -> None:
     assert result.returncode == 0
     assert result.stdout.count("\n") == 1
     matrix = json.loads(result.stdout)
-    assert matrix["cell_count"] == 18 and matrix["wave_count"] == 6
+    assert matrix["cell_count"] == 19 and matrix["wave_count"] == 6
     assert set(matrix["families"]) == {"okta", "azure", "aws"}
-    assert len(matrix["families"]["okta"]) == 2
+    # okta runs three waves: dev okta-config, dev okta-applications, prod okta-config
+    assert len(matrix["families"]["okta"]) == 3
+    assert matrix["family_wave_sizes"]["okta"] == [1, 1, 1]
+    assert [[e["path"] for e in wave] for wave in matrix["families"]["okta"]] == [[OKTA_DEV], [OKTA_APPS], [OKTA_PROD]]
 
 
 def test_cli_changed_family_filter_and_explain(good_root: Path) -> None:
@@ -302,19 +355,36 @@ def test_cli_changed_family_filter_and_explain(good_root: Path) -> None:
     assert result.returncode == 0
     assert "7 cell(s) in 6 wave(s)" in result.stdout
     assert "tenants/aws/govcloud/aws-identity-center: selected, root (tenants/aws/root.hcl)" in result.stdout
-    assert "tenants/okta/dev/okta-config" not in result.stdout
+    assert "tenants/okta/" not in result.stdout
     quiet = _cli("--root", str(good_root), "--changed", "README.md", "--explain")
     assert "0 cell(s) in 0 wave(s)" in quiet.stdout
-    assert "tenants/okta/dev/okta-config: not selected" in quiet.stdout
+    assert f"{OKTA_DEV}: not selected" in quiet.stdout
+    assert f"{OKTA_APPS}: not selected" in quiet.stdout
+    # The okta train filters to its family: the root selects all three of
+    # its cells, one per wave, and the other families stay out of the output.
+    okta = _cli("--root", str(good_root), "--family", "okta", "--changed", "tenants/okta/root.hcl", "--explain")
+    assert okta.returncode == 0
+    assert "3 cell(s) in 3 wave(s)" in okta.stdout
+    assert f"{OKTA_APPS}: selected, root (tenants/okta/root.hcl)" in okta.stdout
+    assert "tenants/azure/" not in okta.stdout and "tenants/aws/" not in okta.stdout
 
 
 def test_cli_changed_from_stdin_and_pad(good_root: Path) -> None:
-    result = _cli("--root", str(good_root), "--changed-from", "-", "--github-matrix", "--pad-waves", "8", stdin="tenants/okta/dev/okta-config/terragrunt.hcl\n\n./tenants/okta/prod/okta-config/terragrunt.hcl\n")
+    result = _cli("--root", str(good_root), "--changed-from", "-", "--github-matrix", "--pad-waves", "8", stdin=f"{OKTA_DEV}/terragrunt.hcl\n\n./{OKTA_PROD}/terragrunt.hcl\n")
     matrix = json.loads(result.stdout)
     assert matrix["wave_count"] == 8 and matrix["cell_count"] == 2
-    assert [e["path"] for e in matrix["waves"][0]] == ["tenants/okta/dev/okta-config"]
-    assert [e["path"] for e in matrix["waves"][1]] == ["tenants/okta/prod/okta-config"]
+    assert [e["path"] for e in matrix["waves"][0]] == [OKTA_DEV]
+    assert [e["path"] for e in matrix["waves"][1]] == [OKTA_PROD]
     assert matrix["waves"][1][0]["gated"] is True
+    # A fragment path on stdin selects the catalog cell; with its dependency
+    # also changed it lands one wave later, and prod after both.
+    three = _cli("--root", str(good_root), "--changed-from", "-", "--github-matrix", stdin=f"{OKTA_APPS}/saml-apps.hcl\n{OKTA_DEV}/terragrunt.hcl\n{OKTA_PROD}/terragrunt.hcl\n")
+    matrix = json.loads(three.stdout)
+    assert matrix["cell_count"] == 3 and matrix["wave_count"] == 3
+    assert [[e["path"] for e in wave] for wave in matrix["waves"]] == [[OKTA_DEV], [OKTA_APPS], [OKTA_PROD]]
+    apps = matrix["waves"][1][0]
+    assert apps["depends_on"] == [OKTA_DEV] and apps["gated"] is False
+    assert apps["reasons"] == [{"code": "cell-files", "path": f"{OKTA_APPS}/saml-apps.hcl"}]
 
 
 def test_cli_errors_are_exit_2(tmp_path: Path, good_copy: Path) -> None:

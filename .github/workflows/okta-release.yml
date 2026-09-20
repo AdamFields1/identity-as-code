@@ -1,27 +1,98 @@
 # Release train for the Okta identity-as-code tree.
 #
 #   push to main
-#     |-- plan-dev  ----> apply-dev (environment: dev)
-#     |-- plan-prod (merge-time plan, saved as artifact)
-#                 \
-#                  soak-gate (environment: prod, required reviewers + wait timer)
-#                       |
-#                  apply-prod (environment: prod-apply, applies the merge-time plan)
+#     |-- cells (tools/repo_lint/cells.py --family okta: every cell, in waves)
+#           |
+#           |-- plan-wave-0 ---> apply-wave-0 ---> plan-wave-1 ---> apply-wave-1 ---> ... (dev, up to four waves)
+#           |
+#           |-- plan-gated-wave-0 (prod, merge-time plan, saved as artifact)
+#                       \                                            \
+#                        prod-gate (environment: prod, reviewers + wait timer)
+#                             |
+#                        apply-gated-wave-0 (environment: prod-apply, applies the merge-time plan)
+#                             |
+#                        plan/apply-gated-wave-1 ... 3 (the rest of prod, planned after the gate)
+#
+# With the cells this tree holds today the waves are:
+#   wave 0        dev/okta-config
+#   wave 1        dev/okta-applications (after the config cell, whose network
+#                 zones its sign-on policies name)
+#   gated wave 0  prod/okta-config
+#   gated wave 1  prod/okta-applications
+#
+# The cells and their order are not written here. The cells job runs
+# tools/repo_lint/cells.py, which finds every cell under tenants/okta by its
+# terragrunt.hcl and orders the cells by the rules this train used to state
+# by hand (docs/adr/0018): a Terragrunt dependencies block, and dev before
+# prod. The applications cell of each org carries dependencies = ["../okta-config"]
+# because its sign-on policy rules name network zones by the names the
+# config cell creates them with, resolved at plan time; nothing else in the
+# family reads another cell's outputs, so the rest of the order is a
+# release rule, and it is stated once, in cells.py, where the pull request
+# workflow and the lint job read the same rule. A new cell needs no edit
+# here: it lands in its wave. What does need an edit is a wave count beyond
+# what this file carries (four for dev, four for prod); the cells job
+# refuses that loudly rather than dropping a cell.
+#
+# Two things changed shape from the per-tenant jobs this replaced. Dev is
+# no longer one plan and one apply: the config cell applies before the
+# applications cell plans, because a zone the config cell has not created
+# yet is a plan-time failure in the applications cell. And a red cell stops
+# the train at its wave: a wave's apply job runs only when every plan in the
+# wave succeeded, and the next wave only when the whole wave applied, so a
+# failed plan in dev holds prod at the gate. Both are the price of a train
+# that does not list its cells.
+#
+# Dev is the first tenant, the way corp is for Azure and commercial is for
+# AWS. Prod is the gated one. Its first wave is planned at merge time, in
+# parallel with dev, and saved; the reviewer approves that exact plan. If
+# prod state moves between merge and approval, Terraform refuses the stale
+# plan and the release must be re-run, which is the safe failure. The rest
+# of prod (today the applications cell) is planned fresh after the gate and
+# applied without a second approval, under prod-apply, which carries the
+# writer token and a main-only branch policy: the reviewer approved the
+# release, and the config cell it depends on has just applied, so a plan
+# taken before the gate would be stale by construction.
 #
 # Why the prod plan is taken at merge time and not after approval: the reviewer
-# approves a specific plan, and that exact plan is what runs. If prod state moves
-# between merge and approval, Terraform refuses the stale plan and the release
-# must be re-run, which is the safe failure.
+# approves a specific plan, and that exact plan is what runs.
 #
-# Environments (configured in repository settings, no secrets in this repo):
-#   dev-plan   read-only Okta token, plan-only AWS role
-#   dev        read-write Okta token for the dev tenant
+# Credentials: the Okta API token is a GitHub environment secret that
+# reaches the provider only through OKTA_API_TOKEN, which the provider reads
+# natively; tenants/okta/root.hcl generates a provider block with no
+# api_token, so the token is in no generated file, no plan artifact, and no
+# state. AWS access for the S3 state backend uses GitHub OIDC
+# (aws-actions/configure-aws-credentials with a role ARN from a repository
+# variable, no access keys). See docs/adr/0003.
+#
+# Environments (configured in repository settings, no secrets in this repo).
+# TG_STATE_BUCKET, TG_STATE_REGION, TG_LOCK_TABLE, AWS_PLAN_ROLE_ARN, and
+# AWS_APPLY_ROLE_ARN are repository variables an environment may override.
+# GitHub resolves vars.X to the environment value only inside a job that
+# names the environment, which is why the state variables are set at job
+# level and not at workflow level. A job names its environment from the
+# cell's tenant, so the names below are a contract with cells.py:
+# <tenant>-plan, <tenant>, <tenant>-apply. cells.py refuses a cell under any
+# tenant its promotion order does not name (exit 2, which stops the lint
+# job and the cells job below alike), and the cells job checks the matrix
+# against the two names once more, because an environment GitHub has never
+# been told about is created on first use with no reviewers, no wait timer,
+# and no branch policy.
+#   dev-plan   read-only Okta token for the dev org, plan-only AWS role
+#   dev        read-write Okta token for the dev org
 #   prod-plan  read-only Okta token for prod, plan-only AWS role
 #   prod       no secrets; carries the required reviewers and the wait timer
 #   prod-apply read-write Okta token for prod; deployment branch policy: main only
 #
-# The prod secret lives in prod-apply rather than prod so the reviewer approves
-# once, at the gate. apply-prod cannot start without soak-gate succeeding.
+# The prod token lives in prod-apply rather than prod so the reviewer approves
+# once, at the gate. apply-gated-wave-0 cannot start without prod-gate
+# succeeding.
+#
+# A cell's path and id are directory names from the tree. Every run block
+# reads them from the job's env ($CELL_ID, $CELL_PATH) and never from a
+# ${{ matrix.cell.* }} expression inside the script, so a name is data to
+# the shell; cells.py refuses any name made of more than letters, digits,
+# dot, hyphen, and underscore before the matrix is built.
 
 name: okta-release
 
@@ -29,9 +100,10 @@ on:
   push:
     branches: [main]
     paths:
-      - "modules/**"
-      - "stacks/**"
-      - "tenants/**"
+      - "modules/okta/**"
+      - "stacks/okta-*/**"
+      - "tenants/okta/**"
+      - "tools/repo_lint/cells.py"
       - ".github/workflows/okta-release.yml"
   workflow_dispatch:
 
@@ -44,9 +116,6 @@ env:
   TG_VERSION: "0.77.0"
   TF_IN_AUTOMATION: "true"
   TG_NON_INTERACTIVE: "true"
-  TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
-  TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
-  TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
   PLAN_DIR: ${{ github.workspace }}/plans
 
 # Releases queue behind each other and are never cancelled mid-apply.
@@ -56,19 +125,98 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------------
-  plan-dev:
-    name: plan dev
+  cells:
+    name: discover cells and waves
     # Skip the whole train until the repo variables for the state backend exist.
     # Without this guard every push to main would fail on a portfolio repo that
     # has no live backend behind it. Downstream jobs inherit the skip through needs.
     if: vars.TG_STATE_BUCKET != ''
     runs-on: ubuntu-latest
-    environment: dev-plan
+    # Reads the checkout and nothing else: no OIDC token and no Okta token
+    # for a job that never calls a cloud.
+    permissions:
+      contents: read
+    outputs:
+      first_waves: ${{ steps.cells.outputs.first_waves }}
+      first_sizes: ${{ steps.cells.outputs.first_sizes }}
+      gated_waves: ${{ steps.cells.outputs.gated_waves }}
+      gated_sizes: ${{ steps.cells.outputs.gated_sizes }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: cells.py
+        id: cells
+        env:
+          FIRST_WAVES: "4"
+          GATED_WAVES: "4"
+        run: |
+          set -euo pipefail
+          matrix=$(python3 tools/repo_lint/cells.py --root . --family okta --all --github-matrix)
+          echo "$matrix" | jq '{cell_count, wave_sizes, cells: [.cells[] | {id, wave, gated, kind}]}'
+
+          # The environment names in this file are a contract with cells.py:
+          # a cell's tenant becomes <tenant>-plan, <tenant>, and <tenant>-apply.
+          # cells.py already refuses a tenant its promotion order does not
+          # name; this line holds the train to the two names that exist in
+          # repository settings, because an environment GitHub has never been
+          # told about is created on first use with no reviewers, no wait
+          # timer, and no branch policy.
+          echo "$matrix" | jq -e '[.cells[].tenant] | all(. == "dev" or . == "prod")' >/dev/null \
+            || { echo '::error::a cell sits under a tenant this train has no environments for; only dev and prod exist'; exit 1; }
+
+          # Split the family's waves at the gate. cells.py already orders dev
+          # before prod (README, "Promotion is gated"), so no wave mixes the
+          # two; the split is still made per cell, by gated, so that stays
+          # true if the rule ever changes. Empty waves are dropped and each
+          # list is padded back to the number of wave jobs this file
+          # carries, so the jobs can index it, and a family that needs more
+          # waves than that is refused here with the fix named rather than
+          # having a cell fall off the end of the train.
+          first=$(echo "$matrix" | jq -c --argjson n "$FIRST_WAVES" '
+            [(.families.okta // [])[] | map(select(.gated | not)) | select(length > 0)]
+            | if length > $n then error("dev needs \(length) waves and this workflow carries \($n) plan/apply wave jobs; add plan-wave-\($n) and apply-wave-\($n) in the same shape and raise FIRST_WAVES") else . end
+            | . + [range(length; $n) | []]')
+          gated=$(echo "$matrix" | jq -c --argjson n "$GATED_WAVES" '
+            [(.families.okta // [])[] | map(select(.gated)) | select(length > 0)]
+            | if length > $n then error("prod needs \(length) waves and this workflow carries \($n) gated wave jobs; add plan-gated-wave-\($n) and apply-gated-wave-\($n) in the same shape and raise GATED_WAVES") else . end
+            | . + [range(length; $n) | []]')
+          {
+            echo "first_waves=$first"
+            echo "first_sizes=$(echo "$first" | jq -c 'map(length)')"
+            echo "gated_waves=$gated"
+            echo "gated_sizes=$(echo "$gated" | jq -c 'map(length)')"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Okta release waves (${{ github.sha }})"
+            echo "$first" | jq -r 'to_entries[] | select(.value | length > 0) | "- wave \(.key): " + (.value | map(.family_path) | join(", "))'
+            echo "$gated" | jq -r 'to_entries[] | select(.value | length > 0) | "- gated wave \(.key): " + (.value | map(.family_path) | join(", "))'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  plan-wave-0:
+    name: plan ${{ matrix.cell.family_path }} (wave 0)
+    # The first wave of the first tenant: today the dev config cell. Read-only
+    # token, plan-only environment.
+    needs: [cells]
+    if: fromJson(needs.cells.outputs.first_sizes)[0] > 0
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.first_waves)[0] }}
+    environment: ${{ matrix.cell.tenant }}-plan
     concurrency:
-      group: okta-tenant-dev
+      group: okta-cell-${{ matrix.cell.id }}
       cancel-in-progress: false
     env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
       OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -85,32 +233,57 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ vars.TG_STATE_REGION }}
-          role-session-name: okta-release-plan-dev-${{ github.run_id }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
       - name: terragrunt plan
-        working-directory: tenants/okta/dev/okta-config
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
           mkdir -p "$PLAN_DIR"
           terragrunt init -input=false
-          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/dev.tfplan"
-          terragrunt show -no-color "$PLAN_DIR/dev.tfplan" > "$PLAN_DIR/dev.txt"
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/$CELL_ID.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.txt"
+          terragrunt show -json "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.json"
+      - name: Plan summary
+        # tools/plan_gate report: the counts, with the replace, import, and
+        # drift columns the soak checklist asks about (docs/adr/0018).
+        run: |
+          set -euo pipefail
+          python3 tools/plan_gate/plan_gate.py report "$PLAN_DIR/$CELL_ID.json" \
+            --github-summary --title "Okta plan: $CELL_PATH (${{ github.sha }})" \
+            --json > "$PLAN_DIR/$CELL_ID.gate.json"
       - uses: actions/upload-artifact@v4
         with:
-          name: okta-plan-dev-${{ github.sha }}
-          path: ${{ env.PLAN_DIR }}/dev.*
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.*
           retention-days: 30
 
   # ---------------------------------------------------------------------------
-  apply-dev:
-    name: apply dev
-    needs: [plan-dev]
+  apply-wave-0:
+    name: apply ${{ matrix.cell.family_path }} (wave 0)
+    # Only when every plan in the wave succeeded (fail-fast is off, so one
+    # red plan fails the job and holds the wave).
+    needs: [cells, plan-wave-0]
     runs-on: ubuntu-latest
-    environment: dev
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.first_waves)[0] }}
+    environment: ${{ matrix.cell.tenant }}
     concurrency:
-      group: okta-tenant-dev
+      group: okta-cell-${{ matrix.cell.id }}
       cancel-in-progress: false
     env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
       OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -127,32 +300,46 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
           aws-region: ${{ vars.TG_STATE_REGION }}
-          role-session-name: okta-release-apply-dev-${{ github.run_id }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-apply-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
       - uses: actions/download-artifact@v4
         with:
-          name: okta-plan-dev-${{ github.sha }}
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
           path: ${{ env.PLAN_DIR }}
       - name: terragrunt apply (saved plan)
-        working-directory: tenants/okta/dev/okta-config
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
           terragrunt init -input=false
-          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/dev.tfplan"
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/$CELL_ID.tfplan"
 
   # ---------------------------------------------------------------------------
-  plan-prod:
-    name: plan prod (merge-time)
-    # Same guard as plan-dev. This job has no needs edge on purpose (the prod plan
-    # is taken at merge time, in parallel with the dev apply), so it must carry
-    # its own skip condition or it runs on every push with no backend behind it.
-    if: vars.TG_STATE_BUCKET != ''
+  plan-wave-1:
+    name: plan ${{ matrix.cell.family_path }} (wave 1)
+    # After the whole of wave 0 has applied. Skipped when the wave is
+    # empty, and then so is every wave after it.
+    needs: [cells, apply-wave-0]
+    if: fromJson(needs.cells.outputs.first_sizes)[1] > 0
     runs-on: ubuntu-latest
-    environment: prod-plan
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.first_waves)[1] }}
+    environment: ${{ matrix.cell.tenant }}-plan
     concurrency:
-      group: okta-tenant-prod
+      group: okta-cell-${{ matrix.cell.id }}
       cancel-in-progress: false
     env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
       OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -169,39 +356,425 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ vars.TG_STATE_REGION }}
-          role-session-name: okta-release-plan-prod-${{ github.run_id }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
       - name: terragrunt plan
-        working-directory: tenants/okta/prod/okta-config
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
           mkdir -p "$PLAN_DIR"
           terragrunt init -input=false
-          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/prod.tfplan"
-          terragrunt show -no-color "$PLAN_DIR/prod.tfplan" > "$PLAN_DIR/prod.txt"
-          terragrunt show -json "$PLAN_DIR/prod.tfplan" > "$PLAN_DIR/prod.json"
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/$CELL_ID.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.txt"
+          terragrunt show -json "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.json"
       - name: Plan summary
         # tools/plan_gate report: the counts, with the replace, import, and
         # drift columns the soak checklist asks about (docs/adr/0018).
         run: |
           set -euo pipefail
-          python3 tools/plan_gate/plan_gate.py report "$PLAN_DIR/prod.json" \
-            --github-summary --title "Prod plan taken at merge (${{ github.sha }})" \
-            --json > "$PLAN_DIR/prod.gate.json"
-          {
-            echo ""
-            echo "This exact plan file is what apply-prod will run after the soak gate."
-          } >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/plan_gate/plan_gate.py report "$PLAN_DIR/$CELL_ID.json" \
+            --github-summary --title "Okta plan: $CELL_PATH (${{ github.sha }})" \
+            --json > "$PLAN_DIR/$CELL_ID.gate.json"
       - uses: actions/upload-artifact@v4
         with:
-          name: okta-plan-prod-${{ github.sha }}
-          path: ${{ env.PLAN_DIR }}/prod.*
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.*
           retention-days: 30
 
   # ---------------------------------------------------------------------------
-  soak-gate:
-    name: soak gate (prod)
-    needs: [apply-dev, plan-prod]
+  apply-wave-1:
+    name: apply ${{ matrix.cell.family_path }} (wave 1)
+    # Only when every plan in the wave succeeded (fail-fast is off, so one
+    # red plan fails the job and holds the wave).
+    needs: [cells, plan-wave-1]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.first_waves)[1] }}
+    environment: ${{ matrix.cell.tenant }}
+    concurrency:
+      group: okta-cell-${{ matrix.cell.id }}
+      cancel-in-progress: false
+    env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-apply-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/$CELL_ID.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-wave-2:
+    name: plan ${{ matrix.cell.family_path }} (wave 2)
+    # After the whole of wave 1 has applied. Skipped when the wave is
+    # empty, and then so is every wave after it.
+    needs: [cells, apply-wave-1]
+    if: fromJson(needs.cells.outputs.first_sizes)[2] > 0
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.first_waves)[2] }}
+    environment: ${{ matrix.cell.tenant }}-plan
+    concurrency:
+      group: okta-cell-${{ matrix.cell.id }}
+      cancel-in-progress: false
+    env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      - name: terragrunt plan
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/$CELL_ID.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.txt"
+          terragrunt show -json "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.json"
+      - name: Plan summary
+        # tools/plan_gate report: the counts, with the replace, import, and
+        # drift columns the soak checklist asks about (docs/adr/0018).
+        run: |
+          set -euo pipefail
+          python3 tools/plan_gate/plan_gate.py report "$PLAN_DIR/$CELL_ID.json" \
+            --github-summary --title "Okta plan: $CELL_PATH (${{ github.sha }})" \
+            --json > "$PLAN_DIR/$CELL_ID.gate.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-wave-2:
+    name: apply ${{ matrix.cell.family_path }} (wave 2)
+    # Only when every plan in the wave succeeded (fail-fast is off, so one
+    # red plan fails the job and holds the wave).
+    needs: [cells, plan-wave-2]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.first_waves)[2] }}
+    environment: ${{ matrix.cell.tenant }}
+    concurrency:
+      group: okta-cell-${{ matrix.cell.id }}
+      cancel-in-progress: false
+    env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-apply-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/$CELL_ID.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-wave-3:
+    name: plan ${{ matrix.cell.family_path }} (wave 3)
+    # After the whole of wave 2 has applied. Skipped when the wave is
+    # empty, and then so is every wave after it.
+    needs: [cells, apply-wave-2]
+    if: fromJson(needs.cells.outputs.first_sizes)[3] > 0
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.first_waves)[3] }}
+    environment: ${{ matrix.cell.tenant }}-plan
+    concurrency:
+      group: okta-cell-${{ matrix.cell.id }}
+      cancel-in-progress: false
+    env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      - name: terragrunt plan
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/$CELL_ID.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.txt"
+          terragrunt show -json "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.json"
+      - name: Plan summary
+        # tools/plan_gate report: the counts, with the replace, import, and
+        # drift columns the soak checklist asks about (docs/adr/0018).
+        run: |
+          set -euo pipefail
+          python3 tools/plan_gate/plan_gate.py report "$PLAN_DIR/$CELL_ID.json" \
+            --github-summary --title "Okta plan: $CELL_PATH (${{ github.sha }})" \
+            --json > "$PLAN_DIR/$CELL_ID.gate.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-wave-3:
+    name: apply ${{ matrix.cell.family_path }} (wave 3)
+    # Only when every plan in the wave succeeded (fail-fast is off, so one
+    # red plan fails the job and holds the wave).
+    needs: [cells, plan-wave-3]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.first_waves)[3] }}
+    environment: ${{ matrix.cell.tenant }}
+    concurrency:
+      group: okta-cell-${{ matrix.cell.id }}
+      cancel-in-progress: false
+    env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-apply-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/$CELL_ID.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-gated-wave-0:
+    name: plan ${{ matrix.cell.family_path }} (merge-time)
+    # The gated tenant's first wave, planned at merge time in parallel with
+    # dev and saved: the reviewer at the gate approves this exact plan. Same
+    # backend guard as the cells job, inherited through needs; the prod-plan
+    # environment carries the read-only prod token.
+    needs: [cells]
+    if: fromJson(needs.cells.outputs.gated_sizes)[0] > 0
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.gated_waves)[0] }}
+    environment: ${{ matrix.cell.tenant }}-plan
+    concurrency:
+      group: okta-cell-${{ matrix.cell.id }}
+      cancel-in-progress: false
+    env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      - name: terragrunt plan
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/$CELL_ID.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.txt"
+          terragrunt show -json "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.json"
+      - name: Plan summary
+        # tools/plan_gate report: the counts, with the replace, import, and
+        # drift columns the soak checklist asks about (docs/adr/0018).
+        run: |
+          set -euo pipefail
+          python3 tools/plan_gate/plan_gate.py report "$PLAN_DIR/$CELL_ID.json" \
+            --github-summary --title "Prod plan taken at merge: $CELL_PATH (${{ github.sha }})" \
+            --json > "$PLAN_DIR/$CELL_ID.gate.json"
+          {
+            echo ""
+            echo "This exact plan file is what apply-gated-wave-0 will run after the soak gate."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  prod-gate:
+    name: soak gate (prod)
+    # Every dev wave is in needs, plan and apply both, so a red plan whose
+    # apply was therefore skipped still shows as a failure here; an empty
+    # wave shows as skipped and is fine. The gate runs only when the
+    # merge-time plan exists, which is only when prod has a cell.
+    needs: [cells, plan-wave-0, apply-wave-0, plan-wave-1, apply-wave-1, plan-wave-2, apply-wave-2, plan-wave-3, apply-wave-3, plan-gated-wave-0]
+    if: >-
+      !cancelled()
+      && needs.cells.result == 'success'
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
+      && needs.plan-gated-wave-0.result == 'success'
+    runs-on: ubuntu-latest
+    # No cloud step here, so no OIDC token and no Okta token: the gate is
+    # the reviewers and the timer.
+    permissions: {}
     # The "prod" environment carries required reviewers and a wait timer
     # (Settings -> Environments -> prod -> Deployment protection rules).
     # The wait timer is the primary soak; the SOAK_MINUTES sleep below is a
@@ -209,15 +782,23 @@ jobs:
     environment: prod
     steps:
       - name: Soak checklist
+        env:
+          GATED: ${{ needs.cells.outputs.gated_waves }}
         run: |
           cat <<'EOF'
           Dev has been applied. Before approving prod, confirm:
             1. Dev sign-in works from inside and outside the corporate zone.
             2. MFA enrollment prompts appear for a fresh dev test user.
             3. Password reset and unlock still work for a dev test user.
-            4. The prod plan artifact (okta-plan-prod-<sha>) shows the expected change set
-               and no destroys you did not intend.
+            4. A dev test user in the payroll and orders groups reaches Example
+               Payroll over SAML and the orders portal over OIDC under the
+               standard-workforce policy, and a user outside those groups is
+               refused the tile.
+            5. Each prod plan artifact listed below shows the expected change set
+               and no destroys you did not intend; the plan_gate table in the
+               merge-time plan job's step summary has the replace and drift columns.
           EOF
+          echo "$GATED" | jq -r '.[0][] | "               okta-plan-" + .id + "-${{ github.sha }}"'
       - name: Documented wait
         env:
           SOAK_MINUTES: ${{ vars.SOAK_MINUTES || '0' }}
@@ -227,16 +808,30 @@ jobs:
           sleep "$(( SOAK_MINUTES * 60 ))"
 
   # ---------------------------------------------------------------------------
-  apply-prod:
-    name: apply prod
-    needs: [soak-gate]
+  apply-gated-wave-0:
+    name: apply ${{ matrix.cell.family_path }} (merge-time plan)
+    # Applies the plan the reviewer approved, under the writer token that
+    # lives in prod-apply so the approval happens once, at the gate.
+    needs: [cells, prod-gate]
     runs-on: ubuntu-latest
-    environment: prod-apply
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.gated_waves)[0] }}
+    environment: ${{ matrix.cell.tenant }}-apply
     concurrency:
-      group: okta-tenant-prod
+      group: okta-cell-${{ matrix.cell.id }}
       cancel-in-progress: false
     env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
       OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -253,16 +848,387 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
           aws-region: ${{ vars.TG_STATE_REGION }}
-          role-session-name: okta-release-apply-prod-${{ github.run_id }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-apply-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
       - uses: actions/download-artifact@v4
         with:
-          name: okta-plan-prod-${{ github.sha }}
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
           path: ${{ env.PLAN_DIR }}
-      - name: terragrunt apply (merge-time plan)
-        working-directory: tenants/okta/prod/okta-config
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
         run: |
           set -euo pipefail
           terragrunt init -input=false
           # A stale plan (state changed since merge) makes this fail. That is intended:
           # re-run the release so a fresh plan goes back through the gate.
-          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/prod.tfplan"
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/$CELL_ID.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-gated-wave-1:
+    name: plan ${{ matrix.cell.family_path }} (gated wave 1)
+    # After gated wave 0 applied: the rest of prod (today the applications
+    # cell, whose sign-on policies name the zones the config cell has just
+    # applied), planned fresh after the gate and applied without a second
+    # approval (prod-apply carries the writer token and a main-only branch
+    # policy).
+    needs: [cells, apply-gated-wave-0]
+    if: fromJson(needs.cells.outputs.gated_sizes)[1] > 0
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.gated_waves)[1] }}
+    environment: ${{ matrix.cell.tenant }}-plan
+    concurrency:
+      group: okta-cell-${{ matrix.cell.id }}
+      cancel-in-progress: false
+    env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      - name: terragrunt plan
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/$CELL_ID.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.txt"
+          terragrunt show -json "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.json"
+      - name: Plan summary
+        # tools/plan_gate report: the counts, with the replace, import, and
+        # drift columns the soak checklist asks about (docs/adr/0018).
+        run: |
+          set -euo pipefail
+          python3 tools/plan_gate/plan_gate.py report "$PLAN_DIR/$CELL_ID.json" \
+            --github-summary --title "Okta plan: $CELL_PATH (${{ github.sha }})" \
+            --json > "$PLAN_DIR/$CELL_ID.gate.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-gated-wave-1:
+    name: apply ${{ matrix.cell.family_path }} (gated wave 1)
+    # Only when every plan in the wave succeeded.
+    needs: [cells, plan-gated-wave-1]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.gated_waves)[1] }}
+    environment: ${{ matrix.cell.tenant }}-apply
+    concurrency:
+      group: okta-cell-${{ matrix.cell.id }}
+      cancel-in-progress: false
+    env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-apply-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/$CELL_ID.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-gated-wave-2:
+    name: plan ${{ matrix.cell.family_path }} (gated wave 2)
+    # After gated wave 1 applied. Empty today; skipped until prod has a
+    # cell in this wave.
+    needs: [cells, apply-gated-wave-1]
+    if: fromJson(needs.cells.outputs.gated_sizes)[2] > 0
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.gated_waves)[2] }}
+    environment: ${{ matrix.cell.tenant }}-plan
+    concurrency:
+      group: okta-cell-${{ matrix.cell.id }}
+      cancel-in-progress: false
+    env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      - name: terragrunt plan
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/$CELL_ID.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.txt"
+          terragrunt show -json "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.json"
+      - name: Plan summary
+        # tools/plan_gate report: the counts, with the replace, import, and
+        # drift columns the soak checklist asks about (docs/adr/0018).
+        run: |
+          set -euo pipefail
+          python3 tools/plan_gate/plan_gate.py report "$PLAN_DIR/$CELL_ID.json" \
+            --github-summary --title "Okta plan: $CELL_PATH (${{ github.sha }})" \
+            --json > "$PLAN_DIR/$CELL_ID.gate.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-gated-wave-2:
+    name: apply ${{ matrix.cell.family_path }} (gated wave 2)
+    # Only when every plan in the wave succeeded.
+    needs: [cells, plan-gated-wave-2]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.gated_waves)[2] }}
+    environment: ${{ matrix.cell.tenant }}-apply
+    concurrency:
+      group: okta-cell-${{ matrix.cell.id }}
+      cancel-in-progress: false
+    env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-apply-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/$CELL_ID.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-gated-wave-3:
+    name: plan ${{ matrix.cell.family_path }} (gated wave 3)
+    # After gated wave 2 applied. Empty today; skipped until prod has a
+    # cell in this wave.
+    needs: [cells, apply-gated-wave-2]
+    if: fromJson(needs.cells.outputs.gated_sizes)[3] > 0
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.gated_waves)[3] }}
+    environment: ${{ matrix.cell.tenant }}-plan
+    concurrency:
+      group: okta-cell-${{ matrix.cell.id }}
+      cancel-in-progress: false
+    env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      - name: terragrunt plan
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/$CELL_ID.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.txt"
+          terragrunt show -json "$PLAN_DIR/$CELL_ID.tfplan" > "$PLAN_DIR/$CELL_ID.json"
+      - name: Plan summary
+        # tools/plan_gate report: the counts, with the replace, import, and
+        # drift columns the soak checklist asks about (docs/adr/0018).
+        run: |
+          set -euo pipefail
+          python3 tools/plan_gate/plan_gate.py report "$PLAN_DIR/$CELL_ID.json" \
+            --github-summary --title "Okta plan: $CELL_PATH (${{ github.sha }})" \
+            --json > "$PLAN_DIR/$CELL_ID.gate.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/${{ matrix.cell.id }}.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-gated-wave-3:
+    name: apply ${{ matrix.cell.family_path }} (gated wave 3)
+    # Only when every plan in the wave succeeded.
+    needs: [cells, plan-gated-wave-3]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJson(needs.cells.outputs.gated_waves)[3] }}
+    environment: ${{ matrix.cell.tenant }}-apply
+    concurrency:
+      group: okta-cell-${{ matrix.cell.id }}
+      cancel-in-progress: false
+    env:
+      CELL_ID: ${{ matrix.cell.id }}
+      CELL_PATH: ${{ matrix.cell.family_path }}
+      # The token of the job's environment: read-only under <tenant>-plan,
+      # read-write under <tenant> and <tenant>-apply. The provider reads it
+      # from the environment; nothing here passes it on.
+      OKTA_API_TOKEN: ${{ secrets.OKTA_API_TOKEN }}
+      TG_STATE_BUCKET: ${{ vars.TG_STATE_BUCKET }}
+      TG_STATE_REGION: ${{ vars.TG_STATE_REGION }}
+      TG_LOCK_TABLE: ${{ vars.TG_LOCK_TABLE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.TG_STATE_REGION }}
+          # STS caps a session name at 64 characters; the run, attempt, and
+          # matrix index are unique per job and the cell is in the job name.
+          role-session-name: okta-release-apply-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: okta-plan-${{ matrix.cell.id }}-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/okta/${{ matrix.cell.family_path }}
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/$CELL_ID.tfplan"

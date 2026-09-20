@@ -1,7 +1,7 @@
 # Terragrunt root for every Okta tenant cell.
 #
 # Each child directory (dev/, prod/) is one tenant, and each tenant holds one
-# cell per stack (okta-config/ today). The cell includes this file, points at the
+# cell per stack (okta-config/ and okta-applications/ today). The cell includes this file, points at the
 # shared stack, and supplies values. Everything that is the same for
 # every tenant lives here: where state goes, how the provider is configured, and
 # which Terraform version is allowed.

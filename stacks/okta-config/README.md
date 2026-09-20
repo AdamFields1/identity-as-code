@@ -12,8 +12,11 @@ Tenant cells under `tenants/okta/` point at this stack and provide values only.
 
 ## What this stack does not manage
 
-Users, groups, group memberships, and applications are owned by the directory of
-record and by Okta provisioning. This stack reads group IDs with the `okta_group`
+Users, groups, and group memberships are owned by the directory of record and by
+Okta provisioning; applications, their sign-on policies, and their group
+assignments are `stacks/okta-applications`, whose cell in the same org depends
+on this one because its policy rules name the zones created here. This stack
+reads group IDs with the `okta_group`
 data source so policies can be scoped by name, and it never hardcodes an ID. If a
 group named in a tenant cell does not exist, the plan fails early with a clear error
 rather than creating a policy that applies to nobody.

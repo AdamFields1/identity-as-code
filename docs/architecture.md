@@ -10,6 +10,9 @@ flowchart LR
       SP[session-policy]
       MP[mfa-policy]
       PP[password-policy]
+      ASP[app-signon-policy]
+      ASM[app-saml]
+      AOA[app-oauth]
     end
     subgraph mentra["modules/entra"]
       EAR[app-registration]
@@ -51,6 +54,7 @@ flowchart LR
 
   subgraph stacks["stacks (units of deployment, names resolved to IDs here)"]
     SO[okta-config]
+    SOK[okta-applications]
     SEA[entra-app-registrations]
     SEC[entra-conditional-access]
     SEP[entra-pim-governance]
@@ -94,6 +98,8 @@ flowchart LR
     RO[root.hcl]
     DEV[dev/okta-config]
     PROD[prod/okta-config]
+    DEVA["dev/okta-applications\n(fragments: signon-policies, saml-apps, oauth-apps)"]
+    PRODA["prod/okta-applications\n(the same fragments)"]
   end
 
   subgraph tazure["tenants/azure (values only, one cell per stack; one per subscription under subscriptions/)"]
@@ -132,6 +138,9 @@ flowchart LR
   SP --> SO
   MP --> SO
   PP --> SO
+  ASP --> SOK
+  ASM --> SOK
+  AOA --> SOK
   EAR --> SEA
   ECA --> SEC
   ESG --> SEP
@@ -200,6 +209,10 @@ flowchart LR
 
   SO --> DEV
   SO --> PROD
+  SOK --> DEVA
+  SOK --> PRODA
+  DEV -.->|dependencies block: zones named by the policy rules| DEVA
+  PROD -.->|dependencies block: zones named by the policy rules| PRODA
   SEA --> CORP
   SEC --> CORP
   SEP --> CORP
@@ -223,6 +236,8 @@ flowchart LR
 
   RO -.->|include| DEV
   RO -.->|include| PROD
+  RO -.->|include| DEVA
+  RO -.->|include| PRODA
   RA -.->|include| CORP
   RA -.->|include| SUB
   RW -.->|include| COMM
@@ -239,6 +254,10 @@ flowchart LR
   PROD --> OPR
   DEV --> OREL
   PROD --> OREL
+  DEVA --> OPR
+  PRODA --> OPR
+  DEVA --> OREL
+  PRODA --> OREL
   CORP --> APR
   SUB --> APR
   CORP --> AREL
@@ -261,6 +280,8 @@ flowchart LR
   PGT -.->|report| AREL
   PGT -.->|report| WREL
   RLT -.->|cells.py waves| WREL
+  RLT -.->|cells.py waves| OREL
+  RLT -.->|cells.py selection| OPR
   RLT --> RL
 ```
 
@@ -271,7 +292,11 @@ is reviewed in the layer where it happens.
 Four things are deliberately absent from the diagram. `azure-rbac-roles` has no
 edge to `azure-pim-governance` or `azure-automation`: both refer to custom roles
 by display name and resolve them at plan time, so the coupling is a name, not an
-output (ADR 0005). Nor do the PIM stacks have an edge to the PIM runbooks: the
+output (ADR 0005). The one dotted edge between two Okta cells is the same
+kind of coupling made explicit: `okta-applications` names the zones
+`okta-config` creates, reads no output from it, and carries a Terragrunt
+`dependencies` block only so the applications cell plans after the config
+cell has applied (ADR 0020). Nor do the PIM stacks have an edge to the PIM runbooks: the
 baseline files under `policies/` mirror their declared entries, and a pull
 request that changes one changes the other (ADR 0015). `subsidiary/*` has no `azure-rbac-roles`,
 `entra-app-registrations`, `entra-aws-federation`, or `azure-automation` cell,
@@ -330,8 +355,8 @@ shapes as values, and the app stacks under `stacks/apps` that hold one
 application's composition (ADR 0017). The diagram shows the two corp
 subscriptions and the two commercial accounts; a new account or subscription is a directory
 with a locator, and the pull request workflows find cells by the presence of
-`terragrunt.hcl`, not by depth. A new AWS cell needs no workflow edit,
-because `aws-release` reads its cells and their waves from
+`terragrunt.hcl`, not by depth. A new AWS or Okta cell needs no workflow edit,
+because `aws-release` and `okta-release` read their cells and their waves from
 `tools/repo_lint/cells.py`; a new Azure cell still needs its plan and apply
 jobs added to `azure-release`, which lists cells explicitly (ADR 0018 says
 why that train is the follow-up).
@@ -342,7 +367,7 @@ and never a tenant: `plan_gate` holds a plan to a profile after every pull
 request plan and reports the merge-time plan at each gate; `repo_lint`
 checks the tree against the sentences this document and the README state;
 `cells` finds the cells, selects the ones a change touches, and orders them
-into the waves the AWS release train runs. They are Python with no
+into the waves the AWS and Okta release trains run. They are Python with no
 dependency outside the standard library, and the runbooks stay PowerShell
 because Azure Automation runs them (ADR 0018).
 
@@ -367,6 +392,41 @@ flowchart TB
 Zones are created first because every policy rule with a network condition needs a
 zone ID. Group IDs are resolved once and shared. Tenants refer to zones by logical key
 and to groups by name, so no tenant file ever contains an Okta ID.
+
+## Inside the applications stack
+
+```mermaid
+flowchart TB
+  subgraph apps["stacks/okta-applications (one cell per org, after its okta-config cell)"]
+    ZN["data okta_network_zone (by name)"]
+    GN["data okta_group (by name, once per distinct name)"]
+    POL["module signon_policies\nokta_app_signon_policy (catch-all DENY, prevent_destroy)\nokta_app_signon_policy_rule"]
+    SAML["module saml_apps\nokta_app_saml (signing fixed)\nokta_app_group_assignments"]
+    OIDC["module oauth_apps\nokta_app_oauth (derived from type, omit_secret)\nokta_app_group_assignments"]
+    ZN -->|zone IDs| POL
+    GN -->|group IDs| POL
+    GN -->|group IDs| SAML
+    GN -->|group IDs| OIDC
+    POL -->|policy_ids by key, as authentication_policy_id| SAML
+    POL -->|policy_ids by key, as authentication_policy_id| OIDC
+    POL -.->|phishing_resistant_only by key, checked on the admin tier at plan| SAML
+    POL -.->|phishing_resistant_only by key, checked on the admin tier at plan| OIDC
+  end
+
+  SAML -->|saml_vendor_onboarding: entity id, SSO URL, metadata URL, certificate| VENDOR["the vendor's side"]
+  OIDC -->|oauth_client_ids, never a secret| DEVS["the developer's side"]
+```
+
+Policies are created first because every app names one by key, and the stack
+resolves the key against the policy module's ids, which is also the dependency
+edge. The admin-tier check is a precondition on the app id outputs rather than
+a variable validation, because it reads a fact the policy module computes from
+its own values (`phishing_resistant_only`), known at plan time: the module owns
+what phishing resistant means, and the stack asks it. Zones are the names the
+org's `okta-config` cell creates, groups are the names the upstream identity
+provider provisions, and a name that does not exist fails the plan with the
+name in the error. The client secret is never in the graph: `omit_secret` is
+fixed true, so the provider does not read it back (ADR 0020).
 
 ## Inside the Azure stacks
 
@@ -643,12 +703,16 @@ key = "okta/${path_relative_to_include()}/terraform.tfstate"
 | Cell directory | State key |
 |----------------|-----------|
 | `tenants/okta/dev/okta-config` | `okta/dev/okta-config/terraform.tfstate` |
+| `tenants/okta/dev/okta-applications` | `okta/dev/okta-applications/terraform.tfstate` |
 | `tenants/okta/prod/okta-config` | `okta/prod/okta-config/terraform.tfstate` |
+| `tenants/okta/prod/okta-applications` | `okta/prod/okta-applications/terraform.tfstate` |
 | `tenants/okta/sandbox/okta-config` (future) | `okta/sandbox/okta-config/terraform.tfstate` |
 
 The Okta cells moved from `tenants/okta/<tenant>` to `tenants/okta/<tenant>/okta-config`
 before any state was written, so the longer key had no predecessor and nothing
-was migrated.
+was migrated. The fragment files beside an `okta-applications` cell's
+`terragrunt.hcl` play no part in the key: only `terragrunt.hcl` marks a cell,
+and a fragment has no state.
 
 Bucket, region, and lock table are environment variables (`TG_STATE_BUCKET`,
 `TG_STATE_REGION`, `TG_LOCK_TABLE`), never HCL literals. The same repository can be
@@ -730,24 +794,37 @@ sequenceDiagram
   PR-->>Dev: plan summary and gate verdict as PR comment + artifact
   Dev->>Main: merge
   Main->>Rel: push event
+  Rel->>Rel: cells.py --family okta: the cells in waves
   par at merge time
-    Rel->>Okta: plan dev
-    Rel->>Okta: plan prod (artifact saved, plan_gate report in the step summary)
+    Rel->>Okta: plan dev wave 0 (okta-config)
+    Rel->>Okta: plan prod gated wave 0 (okta-config, artifact saved, plan_gate report in the step summary)
   end
-  Rel->>Okta: apply dev
+  Rel->>Okta: apply dev wave 0
+  Rel->>Okta: plan and apply dev wave 1 (okta-applications, after the zones it names exist)
   Rel->>Gate: soak gate waits
   Gate-->>Rel: human approval after wait timer
-  Rel->>Okta: apply prod from the merge-time plan artifact
+  Rel->>Okta: apply prod gated wave 0 from the merge-time plan artifact
   Note over Rel,Okta: stale plan (state moved) is refused, release is re-run
+  Rel->>Okta: plan and apply prod gated wave 1 (okta-applications, under prod-apply)
 ```
 
-Two properties matter here:
+Three properties matter here:
 
-1. Prod applies the plan file that was produced when the change merged, not a fresh
-   plan taken after approval. What the reviewer approved is what runs.
-2. Every tenant has its own concurrency group. A PR plan and a release apply for the
-   same tenant never overlap, so state locks are never contested by the pipeline
-   itself.
+1. The gated wave prod applies is the plan file that was produced when the
+   change merged, not a fresh plan taken after approval. What the reviewer
+   approved is what runs. The waves after it (today the applications cell)
+   are planned after the gate, because the config cell they depend on has
+   just applied and a merge-time plan of them would be stale by construction;
+   they apply under `prod-apply` without a second approval, as the AWS train's
+   later gated waves do.
+2. Every cell has its own concurrency group (`okta-cell-<id>`). A PR plan and
+   a release apply for the same cell never overlap, so state locks are never
+   contested by the pipeline itself.
+3. The cells and their order are not in the workflow. `cells.py` finds them
+   under `tenants/okta` and orders them from the `dependencies` block each
+   applications cell carries and the dev-before-prod rule, so a new cell lands
+   in its wave with no workflow edit, and a red cell stops the train at its
+   wave.
 
 `azure-release` has the same shape with corp in the dev position and subsidiary in
 the prod position, and one extra rule: the corp roles cell is applied before the
@@ -819,7 +896,11 @@ waves it emits, the Identity Center cell, then every account's
 app stacks, each wave applied before the next plans, with the GovCloud cell
 planned at merge time and applied after the gate as before. A new AWS cell
 lands in its wave with no workflow edit; a red cell stops the train at its
-wave. `azure-release` still lists its cells (ADR 0018 says why) and applies
+wave. `okta-release` and `okta-pr-validation` took the same shape when the
+applications cells arrived: the release train runs `cells.py --family okta`
+and its wave jobs run what it emits, and the pull request workflow pipes the
+changed paths into `cells.py --changed-from -` and plans only the cells it
+selects (every Okta cell when the workflow file itself changed). `azure-release` still lists its cells (ADR 0018 says why) and applies
 the corp subscription cells after the corp tenant
 cells: each subscription's `azure-subscription-baseline` first, because the
 other cells name the workspace it creates, then `azure-subscription-workloads`,

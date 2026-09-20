@@ -63,6 +63,12 @@ cell for each, the tenant's values are the only difference between the cells,
 and `diff` between two tenants' cells answers "what is stricter there".
 Nothing about them changes.
 
+Amended 2026-09-20: there is a tenth, `stacks/okta-applications`. It is a
+catalog in shape (a menu of typed maps with the guardrails in its modules,
+its cell written as fragments) and a platform stack in placement, because
+every Okta org has a cell for it and `diff` between the two orgs' cells
+answers the same question (ADR 0020).
+
 **Catalog stacks** offer a menu of vetted resource shapes as values, so that
 an account or a subscription can get a one-off IAM role, bucket, key,
 identity, or vault without anyone writing Terraform. The stack holds the

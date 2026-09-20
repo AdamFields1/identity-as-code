@@ -10,6 +10,9 @@ the runbooks call graph.microsoft.com, and the Owner role id
 | Object | Module |
 |--------|--------|
 | Network zones | `modules/okta/network-zone` |
+| App sign-on policies and rules | `modules/okta/app-signon-policy` |
+| Custom SAML 2.0 apps | `modules/okta/app-saml` |
+| OIDC apps | `modules/okta/app-oauth` |
 | Custom role definitions | `modules/azure/rbac-role-definition` |
 | PIM role policies | `modules/azure/pim-role-policy` |
 | Runbooks published from files | `modules/azure/automation-runbooks` |
@@ -22,6 +25,7 @@ the runbooks call graph.microsoft.com, and the Owner role id
 | Stack | Cells |
 |-------|-------|
 | `stacks/okta-config` | `tenants/okta/{dev,prod}/okta-config` |
+| `stacks/okta-applications` | `tenants/okta/dev/okta-applications` (the application catalog cell, in fragments) |
 | `stacks/azure-rbac-roles` | `tenants/azure/corp/azure-rbac-roles` |
 | `stacks/azure-pim-governance` | `tenants/azure/{corp,subsidiary}/azure-pim-governance` |
 | `stacks/azure-automation` | `tenants/azure/corp/azure-automation` |
@@ -42,12 +46,13 @@ the SCIM token reaches Terraform as `secret_token = "CHANGEME"`, never a file.
 ```
 identity-as-code/
   modules/
-    okta/                       network-zone
+    okta/                       network-zone, app-signon-policy, app-saml, app-oauth
     azure/                      rbac-role-definition, pim-role-policy, automation-runbooks,
                                 resource-group
     aws/                        permission-set, kms-key, s3-bucket
   stacks/                       units of deployment
     okta-config/
+    okta-applications/
     apps/                       app stacks (docs/adr/0002)
       aws/payments-api/
       azure/data-pipeline/
@@ -59,7 +64,13 @@ identity-as-code/
   tenants/
     okta/
       root.hcl                  state and provider generation
-      dev/okta-config/terragrunt.hcl
+      dev/
+        okta-config/terragrunt.hcl
+        okta-applications/      the application catalog cell, in fragments
+          terragrunt.hcl
+          signon-policies.hcl
+          saml-apps.hcl
+          oauth-apps.hcl
       prod/okta-config/terragrunt.hcl
     azure/
       root.hcl

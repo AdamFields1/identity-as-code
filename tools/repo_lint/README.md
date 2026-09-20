@@ -9,8 +9,8 @@ or later, no runtime dependency, no network, no Terraform binary:
   ADR it comes from in its docstring, so `--list-checks` is the index.
 - `cells.py` discovers the tenant cells, works out which ones a change
   touches, and orders the selected cells into waves, which is what the AWS
-  release train reads and the Azure train still states with one hand-written
-  job per cell (ADR 0018).
+  and Okta release trains read and the Azure train still states with one
+  hand-written job per cell (ADR 0018).
 
 Both exit 0 when there is nothing to say, so they can sit in a workflow
 next to `terraform fmt` and `tflint`, and do: `.github/workflows/repo-lint.yml`
@@ -98,9 +98,17 @@ instead of restating it. A cell is found by its `terragrunt.hcl`, never by
 depth, so a cell inside another cell's directory (an application's own
 catalog cell, `apps/<app>/catalog`, beside its app cell) is discovered on
 its own, and the `.hcl` fragments beside a `terragrunt.hcl` are part of
-that cell, not cells of their own. `.github/workflows/aws-release.yml` reads it, in a
-`cells` job whose outputs drive one plan and one apply job per wave;
-`azure-release.yml` is the follow-up ADR 0018 names.
+that cell, not cells of their own. `.github/workflows/aws-release.yml` and
+`okta-release.yml` read it, each in a `cells` job whose outputs drive one plan
+and one apply job per wave (`--family aws` and `--family okta`), and
+`okta-pr-validation.yml` pipes the changed paths into `--changed-from -`
+and plans only the cells it selects; `aws-pr-validation.yml` still selects
+with find and grep. The Okta train
+moved onto it when the `okta-applications` cells arrived (ADR 0020): those
+cells carry a `dependencies` block on their org's `okta-config` cell, so
+the waves are dev's config cell, then dev's applications cell, then the
+same two for prod behind the gate. `azure-release.yml` is the follow-up
+ADR 0018 names.
 
 ### Which cells a change touches
 
