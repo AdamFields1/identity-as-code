@@ -63,10 +63,10 @@ def test_discovery_describes_a_nested_app_scoped_catalog_cell(all_cells: list[ce
 
 def test_discovery_describes_platform_scoped_and_app_cells(all_cells: list[cells.Cell]) -> None:
     c = by_path(all_cells)
-    okta = c["tenants/okta/dev"]
+    okta = c["tenants/okta/dev/okta-config"]
     assert (okta.family, okta.tenant, okta.scope, okta.scope_name) == ("okta", "dev", "tenant", None)
     assert (okta.stack, okta.stack_name, okta.kind) == ("stacks/okta-config", "okta-config", "platform")
-    assert okta.family_path == "dev" and okta.id == "dev" and okta.gated is False
+    assert okta.family_path == "dev/okta-config" and okta.id == "dev-okta-config" and okta.gated is False
 
     roles = c[f"{CORP}/azure-rbac-roles"]
     assert roles.kind == "definitions" and roles.dependencies == []
@@ -209,7 +209,7 @@ def wave_index(waves: list[list[cells.Cell]]) -> dict[str, int]:
 def test_waves_for_the_whole_tree(all_cells: list[cells.Cell]) -> None:
     w = wave_index(cells.order_waves(all_cells))
     # okta: dev before prod (promotion order)
-    assert w["tenants/okta/dev"] == 0 and w["tenants/okta/prod"] == 1
+    assert w["tenants/okta/dev/okta-config"] == 0 and w["tenants/okta/prod/okta-config"] == 1
     # azure corp: definitions before their consumers, dependencies honoured
     assert w[f"{CORP}/azure-rbac-roles"] == 0
     assert w[f"{CORP}/entra-conditional-access"] == 0
@@ -257,9 +257,9 @@ def test_waves_detect_a_cycle() -> None:
 
 
 def test_unknown_tenants_follow_the_known_ones_and_share_a_wave() -> None:
-    dev = cells.Cell("tenants/okta/dev", "okta", "dev", "tenant", None, "stacks/okta-config", "okta-config", "platform", [])
-    lab = cells.Cell("tenants/okta/lab", "okta", "lab", "tenant", None, "stacks/okta-config", "okta-config", "platform", [])
-    qa = cells.Cell("tenants/okta/qa", "okta", "qa", "tenant", None, "stacks/okta-config", "okta-config", "platform", [])
+    dev = cells.Cell("tenants/okta/dev/okta-config", "okta", "dev", "tenant", None, "stacks/okta-config", "okta-config", "platform", [])
+    lab = cells.Cell("tenants/okta/lab/okta-config", "okta", "lab", "tenant", None, "stacks/okta-config", "okta-config", "platform", [])
+    qa = cells.Cell("tenants/okta/qa/okta-config", "okta", "qa", "tenant", None, "stacks/okta-config", "okta-config", "platform", [])
     w = wave_index(cells.order_waves([qa, lab, dev]))
     assert w == {dev.path: 0, lab.path: 1, qa.path: 1}
 
@@ -302,18 +302,18 @@ def test_cli_changed_family_filter_and_explain(good_root: Path) -> None:
     assert result.returncode == 0
     assert "7 cell(s) in 6 wave(s)" in result.stdout
     assert "tenants/aws/govcloud/aws-identity-center: selected, root (tenants/aws/root.hcl)" in result.stdout
-    assert "tenants/okta/dev" not in result.stdout
+    assert "tenants/okta/dev/okta-config" not in result.stdout
     quiet = _cli("--root", str(good_root), "--changed", "README.md", "--explain")
     assert "0 cell(s) in 0 wave(s)" in quiet.stdout
-    assert "tenants/okta/dev: not selected" in quiet.stdout
+    assert "tenants/okta/dev/okta-config: not selected" in quiet.stdout
 
 
 def test_cli_changed_from_stdin_and_pad(good_root: Path) -> None:
-    result = _cli("--root", str(good_root), "--changed-from", "-", "--github-matrix", "--pad-waves", "8", stdin="tenants/okta/dev/terragrunt.hcl\n\n./tenants/okta/prod/terragrunt.hcl\n")
+    result = _cli("--root", str(good_root), "--changed-from", "-", "--github-matrix", "--pad-waves", "8", stdin="tenants/okta/dev/okta-config/terragrunt.hcl\n\n./tenants/okta/prod/okta-config/terragrunt.hcl\n")
     matrix = json.loads(result.stdout)
     assert matrix["wave_count"] == 8 and matrix["cell_count"] == 2
-    assert [e["path"] for e in matrix["waves"][0]] == ["tenants/okta/dev"]
-    assert [e["path"] for e in matrix["waves"][1]] == ["tenants/okta/prod"]
+    assert [e["path"] for e in matrix["waves"][0]] == ["tenants/okta/dev/okta-config"]
+    assert [e["path"] for e in matrix["waves"][1]] == ["tenants/okta/prod/okta-config"]
     assert matrix["waves"][1][0]["gated"] is True
 
 
@@ -350,21 +350,21 @@ def test_cli_refuses_a_tenant_the_promotion_order_does_not_name(good_copy: Path)
     # an input error for the command line. The library still orders it (see
     # test_unknown_tenants_follow_the_known_ones_and_share_a_wave), so a
     # caller that extends PROMOTION_ORDER gets the same waves.
-    source = (good_copy / "tenants" / "okta" / "dev" / "terragrunt.hcl").read_text(encoding="ascii")
-    lab = good_copy / "tenants" / "okta" / "lab" / "terragrunt.hcl"
-    lab.parent.mkdir()
+    source = (good_copy / "tenants" / "okta" / "dev" / "okta-config" / "terragrunt.hcl").read_text(encoding="ascii")
+    lab = good_copy / "tenants" / "okta" / "lab" / "okta-config" / "terragrunt.hcl"
+    lab.parent.mkdir(parents=True)
     lab.write_text(source, encoding="ascii")
     result = _cli("--root", str(good_copy), "--github-matrix")
     assert result.returncode == 2, result.stderr
-    assert "tenants/okta/lab: 'lab' is not a tenant of the okta family (dev, prod)" in result.stderr
+    assert "tenants/okta/lab/okta-config: 'lab' is not a tenant of the okta family (dev, prod)" in result.stderr
     # A train filters to its family first, so only its own tenants can stop it; the lint job runs unfiltered.
     assert _cli("--root", str(good_copy), "--family", "aws", "--github-matrix").returncode == 0
     found = cells.discover_cells(good_copy)
     lines = cells.unknown_tenant_lines(found)
-    assert len(lines) == 1 and lines[0].startswith("tenants/okta/lab: 'lab' is not a tenant of the okta family (dev, prod)")
+    assert len(lines) == 1 and lines[0].startswith("tenants/okta/lab/okta-config: 'lab' is not a tenant of the okta family (dev, prod)")
     gcp = cells.Cell("tenants/gcp/dev", "gcp", "dev", "tenant", None, "stacks/x", "x", "platform", [])
     assert cells.unknown_tenant_lines([gcp])[0].startswith("tenants/gcp/dev: 'gcp' is not a family")
-    known = [c for c in found if c.path != "tenants/okta/lab"]
+    known = [c for c in found if c.path != "tenants/okta/lab/okta-config"]
     assert cells.unknown_tenant_lines(known) == []
 
 

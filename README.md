@@ -115,7 +115,7 @@ every tenant or partition of their family:
 
 | Stack | Composes | Cells |
 |-------|----------|-------|
-| `stacks/okta-config` | the four Okta policy modules | `tenants/okta/dev`, `tenants/okta/prod` |
+| `stacks/okta-config` | the four Okta policy modules | `tenants/okta/dev/okta-config`, `tenants/okta/prod/okta-config` |
 | `stacks/entra-app-registrations` | app registrations and service principals with a drift-detection import contract | `tenants/azure/corp/entra-app-registrations` |
 | `stacks/entra-conditional-access` | named locations, authentication strengths, and Conditional Access policies | `tenants/azure/{corp,subsidiary}/entra-conditional-access` |
 | `stacks/entra-pim-governance` | role-assignable groups, PIM for groups policies, and Entra role eligibilities | `tenants/azure/{corp,subsidiary}/entra-pim-governance` |
@@ -190,10 +190,10 @@ identity-as-code/
     entra/pim-governance/           the Entra PIM baseline the drift runbook compares against
     azure/pim-governance/           the Azure PIM baseline the policy sweep holds every eligible pair to
   tenants/
-    okta/                       one directory per tenant, values only, Terragrunt wiring
+    okta/                       one directory per tenant, one cell per stack inside it, values only
       root.hcl                  S3 state, Okta provider generation, adoption hook
-      dev/terragrunt.hcl
-      prod/terragrunt.hcl
+      dev/okta-config/terragrunt.hcl
+      prod/okta-config/terragrunt.hcl
     azure/                      one directory per tenant, one cell per stack inside it
       root.hcl                  Azure Storage state, azurerm + azuread provider generation from ARM_TENANT_ID and the subscription locator, adoption hook
       corp/
@@ -503,9 +503,10 @@ standard library, because every runner has that and nothing else; the
 runbooks stay PowerShell because Azure Automation runs them. See
 [ADR 0018](docs/adr/0018-ci-tooling-in-python.md).
 
-**Path is environment, via Terragrunt.** `tenants/okta/dev`, `tenants/okta/prod`,
-`tenants/azure/corp`, `tenants/azure/subsidiary`, `tenants/aws/commercial`, and
-`tenants/aws/govcloud` are the only places those words appear. There is no
+**Path is environment, via Terragrunt.** `tenants/okta/dev/okta-config`,
+`tenants/okta/prod/okta-config`, `tenants/azure/corp`, `tenants/azure/subsidiary`,
+`tenants/aws/commercial`, and `tenants/aws/govcloud` are the only places those
+words appear. There is no
 `environment` variable threaded through modules and no
 `count = var.is_prod ? 1 : 0` anywhere. Adding a tenant is adding a directory.
 
@@ -516,7 +517,7 @@ See [ADR 0002](docs/adr/0002-values-only-tenant-cells.md).
 
 **State keys derive from the path.** Each `root.hcl` sets
 `key = "<tree>/${path_relative_to_include()}/terraform.tfstate"`, so
-`tenants/okta/prod` writes `okta/prod/terraform.tfstate` and
+`tenants/okta/prod/okta-config` writes `okta/prod/okta-config/terraform.tfstate` and
 `tenants/azure/corp/azure-pim-governance` writes
 `azure/corp/azure-pim-governance/terraform.tfstate`, and
 `tenants/aws/govcloud/aws-identity-center` writes
@@ -525,7 +526,9 @@ An account cell is one level deeper and nothing else changes:
 `tenants/aws/commercial/accounts/example-prod/aws-account-baseline` writes
 `aws/commercial/accounts/example-prod/aws-account-baseline/terraform.tfstate`,
 and the locator beside it plays no part in the key.
-Nobody types a state key, so nobody can point two cells at the same one.
+Nobody types a state key, so nobody can point two cells at the same one. The Okta
+cells moved under `okta-config/` before any state was written, so their longer key
+replaced nothing.
 
 **Azure state lives in Azure Storage, with no storage keys.** The Azure tree keeps
 state in a blob container authenticated with the same Entra token the providers use
@@ -592,7 +595,7 @@ export TG_STATE_REGION=us-east-1
 export TG_LOCK_TABLE=CHANGEME-tflock
 export OKTA_API_TOKEN=CHANGEME     # never commit this, never echo it
 
-cd tenants/okta/dev
+cd tenants/okta/dev/okta-config
 terragrunt init
 terragrunt plan
 ```
@@ -681,7 +684,8 @@ To adopt an existing tenant instead of creating policies from scratch:
 
 1. Run `scripts/Import-OktaPolicies.ps1` against the tenant. It emits `imports.tf`
    and a `values.skeleton.hcl` you paste into the tenant cell.
-2. Drop `imports.tf` into the tenant directory. `root.hcl` picks it up automatically.
+2. Drop `imports.tf` into the cell directory (`tenants/okta/<tenant>/okta-config`).
+   `root.hcl` picks it up automatically.
 3. Plan, then hold the plan to the gate: `terragrunt show -json` and
    `tools/plan_gate/plan_gate.py adoption`. Adjust values until it is green: 0 to
    add, 0 to change, 0 to destroy, every import a no-op. `tests/README.md`

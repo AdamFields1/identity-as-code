@@ -90,10 +90,10 @@ flowchart LR
     PBE[entra/pim-governance/corp-baseline.json]
   end
 
-  subgraph tokta["tenants/okta (values only)"]
+  subgraph tokta["tenants/okta (values only, one cell per stack)"]
     RO[root.hcl]
-    DEV[dev]
-    PROD[prod]
+    DEV[dev/okta-config]
+    PROD[prod/okta-config]
   end
 
   subgraph tazure["tenants/azure (values only, one cell per stack; one per subscription under subscriptions/)"]
@@ -634,17 +634,21 @@ gives the order.
 
 ## State key scheme
 
-`tenants/okta/root.hcl` derives the key from the tenant's path:
+`tenants/okta/root.hcl` derives the key from the cell's path:
 
 ```
 key = "okta/${path_relative_to_include()}/terraform.tfstate"
 ```
 
-| Tenant directory | State key |
-|------------------|-----------|
-| `tenants/okta/dev` | `okta/dev/terraform.tfstate` |
-| `tenants/okta/prod` | `okta/prod/terraform.tfstate` |
-| `tenants/okta/sandbox` (future) | `okta/sandbox/terraform.tfstate` |
+| Cell directory | State key |
+|----------------|-----------|
+| `tenants/okta/dev/okta-config` | `okta/dev/okta-config/terraform.tfstate` |
+| `tenants/okta/prod/okta-config` | `okta/prod/okta-config/terraform.tfstate` |
+| `tenants/okta/sandbox/okta-config` (future) | `okta/sandbox/okta-config/terraform.tfstate` |
+
+The Okta cells moved from `tenants/okta/<tenant>` to `tenants/okta/<tenant>/okta-config`
+before any state was written, so the longer key had no predecessor and nothing
+was migrated.
 
 Bucket, region, and lock table are environment variables (`TG_STATE_BUCKET`,
 `TG_STATE_REGION`, `TG_LOCK_TABLE`), never HCL literals. The same repository can be

@@ -31,8 +31,8 @@ by someone who has never opened the Okta admin console.
 
 ## Consequences
 
-- `diff tenants/okta/dev/terragrunt.hcl tenants/okta/prod/terragrunt.hcl` is the
-  complete answer to "what is stricter in prod".
+- `diff tenants/okta/dev/okta-config/terragrunt.hcl tenants/okta/prod/okta-config/terragrunt.hcl`
+  is the complete answer to "what is stricter in prod".
 - Tenant values are repeated between dev and prod where they are the same (zone
   definitions, for example). This is accepted. Explicit repetition of a dozen lines is
   cheaper to review than a merge hierarchy.

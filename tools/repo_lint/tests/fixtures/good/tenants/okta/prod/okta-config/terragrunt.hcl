@@ -7,7 +7,7 @@ include "root" {
 }
 
 terraform {
-  source = "../../../stacks/okta-config"
+  source = "../../../../stacks/okta-config"
 }
 
 inputs = {

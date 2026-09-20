@@ -7,7 +7,7 @@
 #                  -->  MFA enrollment policy
 #                  -->  password policy
 #
-# Tenant cells (tenants/okta/<env>/terragrunt.hcl) supply values only. This stack
+# Tenant cells (tenants/okta/<env>/okta-config/terragrunt.hcl) supply values only. This stack
 # owns all wiring: group name to ID lookups, zone key to ID lookups, and the
 # module composition itself.
 #

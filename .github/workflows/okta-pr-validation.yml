@@ -115,6 +115,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          # A tenant holds one cell today, okta-config, so the matrix is per
+          # tenant and any change under tenants/okta/<tenant>/ selects that
+          # tenant. A second stack in a tenant moves this workflow onto
+          # tools/repo_lint/cells.py, which the Azure and AWS workflows use.
           changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
           all_tenants=$(find tenants/okta -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
 
@@ -182,7 +186,8 @@ jobs:
           role-session-name: okta-pr-plan-${{ matrix.tenant }}-${{ github.run_id }}
 
       - name: terragrunt plan
-        working-directory: tenants/okta/${{ matrix.tenant }}
+        # The tenant's one cell. See the note in changed-tenants above.
+        working-directory: tenants/okta/${{ matrix.tenant }}/okta-config
         run: |
           set -euo pipefail
           mkdir -p "$PLAN_DIR"

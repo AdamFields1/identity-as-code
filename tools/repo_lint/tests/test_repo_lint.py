@@ -470,7 +470,7 @@ def test_layout_paths_parse_tree_and_skip_description_continuations() -> None:
             "  tenants/",
             "    okta/",
             "      root.hcl                  state",
-            "      dev/terragrunt.hcl",
+            "      dev/okta-config/terragrunt.hcl",
             "```",
         ]
     )
@@ -484,7 +484,7 @@ def test_layout_paths_parse_tree_and_skip_description_continuations() -> None:
         "tenants",
         "tenants/okta",
         "tenants/okta/root.hcl",
-        "tenants/okta/dev/terragrunt.hcl",
+        "tenants/okta/dev/okta-config/terragrunt.hcl",
     ]
 
 

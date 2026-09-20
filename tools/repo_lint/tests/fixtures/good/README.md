@@ -21,7 +21,7 @@ the runbooks call graph.microsoft.com, and the Owner role id
 
 | Stack | Cells |
 |-------|-------|
-| `stacks/okta-config` | `tenants/okta/{dev,prod}` |
+| `stacks/okta-config` | `tenants/okta/{dev,prod}/okta-config` |
 | `stacks/azure-rbac-roles` | `tenants/azure/corp/azure-rbac-roles` |
 | `stacks/azure-pim-governance` | `tenants/azure/{corp,subsidiary}/azure-pim-governance` |
 | `stacks/azure-automation` | `tenants/azure/corp/azure-automation` |
@@ -59,8 +59,8 @@ identity-as-code/
   tenants/
     okta/
       root.hcl                  state and provider generation
-      dev/terragrunt.hcl
-      prod/terragrunt.hcl
+      dev/okta-config/terragrunt.hcl
+      prod/okta-config/terragrunt.hcl
     azure/
       root.hcl
       corp/

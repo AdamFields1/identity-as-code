@@ -1,26 +1,26 @@
-# Okta dev tenant cell.
+# Okta prod tenant cell.
 #
-# Values only. No resources, no provider configuration, no logic. If you find
-# yourself adding a resource here, it belongs in the stack.
+# Values only. Same stack as dev; the differences below are the whole story of
+# "what is stricter in production":
+#   - shorter idle timeout and lifetime
+#   - MFA required on every sign-on rule, including the corporate network
+#   - MFA prompt ALWAYS when off-network
+#   - longer minimum password, tighter lockout, longer auto-unlock
 #
-# State key (derived by root.hcl): okta/dev/terraform.tfstate
+# State key (derived by root.hcl): okta/prod/okta-config/terraform.tfstate
 
 include "root" {
   path = find_in_parent_folders("root.hcl")
 }
 
 terraform {
-  source = "../../../stacks/okta-config"
+  source = "../../../../stacks/okta-config"
 }
 
 inputs = {
-  okta_org_name = "example-org-dev"
-  okta_base_url = "oktapreview.com"
+  okta_org_name = "example-org"
+  okta_base_url = "okta.com"
 
-  # -------------------------------------------------------------------------
-  # Network zones. Keys are stable identifiers used by rules below.
-  # CIDRs are RFC 5737 documentation ranges; replace with real egress ranges.
-  # -------------------------------------------------------------------------
   network_zones = {
     corp-egress = {
       name     = "Corporate egress"
@@ -44,18 +44,14 @@ inputs = {
     }
   }
 
-  # -------------------------------------------------------------------------
-  # Sign-on policy. Dev is relaxed on the corporate network so engineers can
-  # iterate, and still requires MFA from anywhere else.
-  # -------------------------------------------------------------------------
   session_policy = {
-    name            = "Workforce sign-on (dev)"
+    name            = "Workforce sign-on"
     priority        = 1
     groups_included = ["Everyone"]
 
     session_defaults = {
-      idle_minutes      = 120
-      lifetime_minutes  = 720
+      idle_minutes      = 30
+      lifetime_minutes  = 480
       persistent_cookie = false
     }
 
@@ -63,7 +59,9 @@ inputs = {
       corp-network = {
         name               = "Corporate network or VPN"
         priority           = 1
-        mfa_required       = false
+        mfa_required       = true
+        mfa_prompt         = "SESSION"
+        mfa_lifetime       = 240
         network_connection = "ZONE"
         zones_included     = ["corp-egress", "vpn"]
       }
@@ -72,17 +70,14 @@ inputs = {
         name         = "Anywhere else"
         priority     = 2
         mfa_required = true
-        mfa_prompt   = "SESSION"
-        mfa_lifetime = 480
+        mfa_prompt   = "ALWAYS"
+        session_idle = 15
       }
     }
   }
 
-  # -------------------------------------------------------------------------
-  # MFA enrollment.
-  # -------------------------------------------------------------------------
   mfa_policy = {
-    name            = "Workforce MFA enrollment (dev)"
+    name            = "Workforce MFA enrollment"
     priority        = 1
     groups_included = ["Everyone"]
     is_oie          = true
@@ -90,8 +85,8 @@ inputs = {
     authenticators = {
       okta_password = { enroll = "REQUIRED" }
       okta_verify   = { enroll = "REQUIRED" }
-      fido_webauthn = { enroll = "OPTIONAL" }
-      google_otp    = { enroll = "OPTIONAL" }
+      fido_webauthn = { enroll = "REQUIRED" }
+      google_otp    = { enroll = "NOT_ALLOWED" }
       phone_number  = { enroll = "NOT_ALLOWED" }
     }
 
@@ -104,18 +99,26 @@ inputs = {
     }
   }
 
-  # -------------------------------------------------------------------------
-  # Password policy. Module defaults are already strict; dev only overrides
-  # the lockout window so test accounts recover faster.
-  # -------------------------------------------------------------------------
   password_policy = {
-    name            = "Workforce password (dev)"
+    name            = "Workforce password"
     priority        = 1
     groups_included = ["Everyone"]
 
+    complexity = {
+      min_length = 16
+    }
+
     lockout = {
-      max_attempts        = 10
-      auto_unlock_minutes = 15
+      max_attempts        = 5
+      auto_unlock_minutes = 60
+    }
+
+    recovery = {
+      email               = "ACTIVE"
+      email_token_minutes = 30
+      sms                 = "INACTIVE"
+      call                = "INACTIVE"
+      question            = "INACTIVE"
     }
 
     rules = {

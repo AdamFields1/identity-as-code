@@ -1,7 +1,8 @@
 # Terragrunt root for every Okta tenant cell.
 #
-# Each child directory (dev/, prod/) is one tenant. The child includes this file,
-# points at the shared stack, and supplies values. Everything that is the same for
+# Each child directory (dev/, prod/) is one tenant, and each tenant holds one
+# cell per stack (okta-config/ today). The cell includes this file, points at the
+# shared stack, and supplies values. Everything that is the same for
 # every tenant lives here: where state goes, how the provider is configured, and
 # which Terraform version is allowed.
 #
@@ -13,9 +14,11 @@
 # without editing HCL. TG_STATE_BUCKET and TG_LOCK_TABLE have no default on
 # purpose: a missing value fails fast instead of silently using local state.
 #
-# The state key is derived from the tenant's path relative to this file, so
-# tenants/okta/dev -> okta/dev/terraform.tfstate. Adding a tenant is a new
-# directory, not a new backend configuration.
+# The state key is derived from the cell's path relative to this file, so
+# tenants/okta/dev/okta-config -> okta/dev/okta-config/terraform.tfstate. Adding a
+# tenant is a new directory, not a new backend configuration. The cells moved
+# under okta-config/ before any state was written, so that key never had a
+# predecessor to migrate from.
 # ---------------------------------------------------------------------------
 
 locals {
@@ -88,7 +91,7 @@ generate "versions" {
 }
 
 # ---------------------------------------------------------------------------
-# Adoption hook. If a tenant directory contains imports.tf (as produced by
+# Adoption hook. If a cell directory contains imports.tf (as produced by
 # scripts/Import-OktaPolicies.ps1), its import blocks are copied into the
 # working directory so `terragrunt plan` adopts the existing resources. Delete
 # imports.tf after the first apply; import blocks are one-shot.

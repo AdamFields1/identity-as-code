@@ -87,7 +87,7 @@ jobs:
           aws-region: ${{ vars.TG_STATE_REGION }}
           role-session-name: okta-release-plan-dev-${{ github.run_id }}
       - name: terragrunt plan
-        working-directory: tenants/okta/dev
+        working-directory: tenants/okta/dev/okta-config
         run: |
           set -euo pipefail
           mkdir -p "$PLAN_DIR"
@@ -133,7 +133,7 @@ jobs:
           name: okta-plan-dev-${{ github.sha }}
           path: ${{ env.PLAN_DIR }}
       - name: terragrunt apply (saved plan)
-        working-directory: tenants/okta/dev
+        working-directory: tenants/okta/dev/okta-config
         run: |
           set -euo pipefail
           terragrunt init -input=false
@@ -171,7 +171,7 @@ jobs:
           aws-region: ${{ vars.TG_STATE_REGION }}
           role-session-name: okta-release-plan-prod-${{ github.run_id }}
       - name: terragrunt plan
-        working-directory: tenants/okta/prod
+        working-directory: tenants/okta/prod/okta-config
         run: |
           set -euo pipefail
           mkdir -p "$PLAN_DIR"
@@ -259,7 +259,7 @@ jobs:
           name: okta-plan-prod-${{ github.sha }}
           path: ${{ env.PLAN_DIR }}
       - name: terragrunt apply (merge-time plan)
-        working-directory: tenants/okta/prod
+        working-directory: tenants/okta/prod/okta-config
         run: |
           set -euo pipefail
           terragrunt init -input=false

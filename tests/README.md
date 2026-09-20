@@ -25,8 +25,8 @@ and where the workflows call it.
 1. `scripts/Import-OktaPolicies.ps1` reads the live tenant and writes `imports.tf`
    (Terraform `import` blocks) and `values.skeleton.hcl` (a starting point for the
    tenant `inputs`).
-2. `imports.tf` is placed in the tenant directory. `tenants/okta/root.hcl` copies it
-   into the working directory through a `generate` block, so nothing in the stack
+2. `imports.tf` is placed in the cell directory (`tenants/okta/<tenant>/okta-config`).
+   `tenants/okta/root.hcl` copies it into the working directory through a `generate` block, so nothing in the stack
    changes.
 3. `terragrunt plan -out` followed by `terragrunt show -json` produces machine-readable
    change counts. Import blocks appear in `resource_changes` with an `importing`
@@ -50,7 +50,7 @@ release train without this gate having passed first.
 
 ```yaml
 - name: Zero-change import gate
-  working-directory: tenants/okta/${{ matrix.tenant }}
+  working-directory: tenants/okta/${{ matrix.tenant }}/okta-config
   env:
     TENANT: ${{ matrix.tenant }}
     PLAN: ${{ github.workspace }}/plans/${{ matrix.tenant }}.tfplan
@@ -79,7 +79,7 @@ plain one, and counts a replace as a create and a delete.
 
 ```yaml
 - name: Zero-change import gate (jq)
-  working-directory: tenants/okta/${{ matrix.tenant }}
+  working-directory: tenants/okta/${{ matrix.tenant }}/okta-config
   env:
     PLAN: ${{ github.workspace }}/plans/${{ matrix.tenant }}.tfplan
   run: |
