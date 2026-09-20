@@ -343,6 +343,32 @@ the runtime identity holding AcrPull on Azure) the difference is stated
 rather than papered over. See
 [ADR 0019](docs/adr/0019-a-container-workload-identity-plane-on-both-clouds.md).
 
+**A resource an application needs and that is not in its app stack goes
+through one of two doors, and wiring decides which.** A resource nothing of
+the application touches is a catalog entry carrying the application's
+owner tag; a resource the application consumes is a catalog entry the
+application names from its own side; only a resource that must itself name
+something the app stack creates belongs in the app stack. Both doors are
+committed in
+`tenants/aws/commercial/accounts/example-prod/aws-account-workloads/terragrunt.hcl`:
+the orders team's load-test harness (the role `orders-api-loadtest-runner`
+and the bucket `orders-api-prod-loadtest-results`, `owner = orders`, which
+no identity of the orders-api stack reads or writes) and the data
+platform's `example-prod-reference-data` bucket with its publisher role
+(`owner = data-platform`, no allow list), which
+`tenants/aws/commercial/accounts/example-prod/apps/orders-api/terragrunt.hcl`
+reads by setting `reference_bucket_names = ["example-prod-reference-data"]`.
+The direction of any reference between cells follows the release order:
+within an account the baseline is applied first, then the catalog, then
+the app stacks, so an app stack may name a catalog resource by name, and a
+catalog entry never names a resource an app stack creates. The task role's
+policy builds the bucket ARN from the partition and the name, so nothing
+is looked up at plan and the wave order takes care of existence at apply.
+The trap both examples teach is the reverse direction: a catalog bucket
+whose allow list names the app's task role fails on the first release,
+because the catalog is applied before the app exists. See
+[ADR 0017](docs/adr/0017-three-kinds-of-stack.md).
+
 **Automation is code, dry by default, on a managed identity.** The work that
 depends on live data (which credentials expired, which guests went quiet,
 which eligibilities are about to lapse, which subscriptions nobody

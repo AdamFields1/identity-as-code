@@ -132,6 +132,28 @@ walking up, the same discovery by the presence of `terragrunt.hcl`, and a
 state key that follows the path. The two app cells were moved in the same
 change.
 
+Amended 2026-09-20: a resource an application needs and that is not in its
+app stack goes through one of two doors, and the wiring decides which. A
+resource nothing of the application touches is a catalog entry, and it
+carries the application's owner tag (an entry's tags merge over the
+cell's) so the catalog says who it is for; a resource the application
+consumes is a catalog entry the application names from its own side, by
+name, in a knob of its own stack. The direction of any reference between
+cells follows the wave order the release train applies within an account:
+the baseline, then the catalog, then the app stacks
+(`tools/repo_lint/cells.py` orders them). An app stack may therefore name
+a catalog resource by name, building the ARN from the partition and the
+name so nothing is looked up at plan and the wave order takes care of
+existence at apply, and a catalog entry never names a resource an app
+stack creates: a catalog bucket whose allow list names an app stack's role
+is applied before that role exists and fails the first release. Both doors
+are committed in the example-prod cells: the load-test harness and the
+reference data bucket in
+`tenants/aws/commercial/accounts/example-prod/aws-account-workloads/terragrunt.hcl`,
+and the read side in
+`tenants/aws/commercial/accounts/example-prod/apps/orders-api/terragrunt.hcl`
+through the orders-api stack's `reference_bucket_names`.
+
 `tenants/aws/root.hcl` finds the two AWS locators by walking up from the
 cell with `find_in_parent_folders`, reads them with `read_terragrunt_config`,
 and generates the provider with `allowed_account_ids = ["<account_id>"]`

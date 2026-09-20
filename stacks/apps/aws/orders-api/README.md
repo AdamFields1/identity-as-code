@@ -27,7 +27,10 @@ states under "Three layers".
 
 There is no bucket. An API's artifact is its image, and the image lives in
 the repository this stack creates; `payments-api` is the sibling stack for
-an application that also reads and writes objects. The compute (the ECS
+an application that also reads and writes objects. What the task role does
+read from S3, the reference data a cell names in `reference_bucket_names`,
+is the catalog's and not this stack's ("Resources beside the stack" below).
+The compute (the ECS
 cluster, service, and task definition) is not managed here either: the
 application's deployment pipeline owns it, changes it on every release, and
 reads this stack's outputs to write it. The stack is the part that changes
@@ -102,6 +105,7 @@ be a second cell of the same stack with its own values.
   task role <app>-<env>-task
    trust: ecs-tasks, this account
    inline: ssm: get under /<app>/<env>/
+   + s3: list and get on reference_bucket_names (catalog buckets; nothing when unset)
 ```
 
 The task role is what the application's code runs as; the execution role is
@@ -166,6 +170,14 @@ the account name is not always that.
 - A `log_retention_days` that CloudWatch Logs does not accept, including 0
   (never expire). The stack checks it first and the log-group module checks
   it again.
+- A `reference_bucket_names` entry that is not a bucket name as the
+  s3-bucket module accepts it (3 to 63 lowercase letters, digits, dots, and
+  hyphens, starting and ending with a letter or digit, no `..`, no `xn--`
+  prefix, not shaped like an IP address), an entry with an `arn:` prefix or
+  a `*` or `?` in it, or a name listed twice. The stack builds the ARN from
+  the name and the partition it discovers: an ARN would carry a partition
+  the cell should not know, a wildcard would grant buckets the cell did not
+  name, and a repeat would render one grant twice.
 - `Application` or `Environment` in `tags`; the stack derives both from the
   naming variables so the tags cannot disagree with the names.
 - From the modules: a wildcard in a trust policy, an inline statement that
@@ -188,7 +200,10 @@ the account name is not always that.
 
 Unlike `payments-api`, no module in this stack resolves a name with a data
 source at plan time, so there is no `depends_on` and no `(known after
-apply)` on a policy. Three orderings still matter, and each is a reference
+apply)` on a policy. The reference bucket ARNs are built the same way, from
+the partition and the names in `reference_bucket_names`, so a bucket of the
+catalog enters the task role's policy without a lookup and without a
+`dependencies` block in the cell. Three orderings still matter, and each is a reference
 rather than a `depends_on`, because a reference through a module output
 orders resources without deferring the referencing document to apply, so
 every plan shows every policy in full:
@@ -307,6 +322,8 @@ inputs = {
   untagged_image_expiry_days   = 7
   log_retention_days           = 365
 
+  reference_bucket_names = ["example-prod-reference-data"]
+
   tags = {
     owner       = "orders"
     cost_centre = "cc-4444"
@@ -327,11 +344,14 @@ the deployment's name; a cell whose GitHub environment shares its
 deployment's name may omit the input, and the trust subject is then
 `repo:example-org/orders-api:environment:prod`. The two registry knobs are
 written out at their defaults (30 images, 7 days) so the dev cell's smaller
-values read as a difference and not as an omission. The dev cell in
-`example-dev` is the same file with `environment = "dev"`, the
-`development` environment, 10 images, 3 days, and 30 days of logs, and
-`diff` between the two is the complete answer to "what is different in
-prod".
+values read as a difference and not as an omission. `reference_bucket_names`
+is the one value in the cell that names something another cell owns: the
+catalog's reference data bucket, as a name and not an ARN ("Resources
+beside the stack"). The dev cell in `example-dev` is the same file with
+`environment = "dev"`, the `development` environment, 10 images, 3 days,
+30 days of logs, and no `reference_bucket_names` (dev reads no reference
+data, so the stack grants nothing), and `diff` between the two is the
+complete answer to "what is different in prod".
 
 ## Standalone use without Terragrunt
 
@@ -365,6 +385,7 @@ module "orders_api" {
 | `image_retention_count` | `number` | `30` | Newest images the repository keeps, whatever their tag. 1 to 1000. |
 | `untagged_image_expiry_days` | `number` | `7` | Days after push that an untagged image expires. 1 to 365. |
 | `log_retention_days` | `number` | `90` | Log group retention, one of the values CloudWatch Logs accepts. |
+| `reference_bucket_names` | `list(string)` | `[]` | Names of catalog buckets in this account whose objects the task role may read. Names, never ARNs; empty grants nothing. |
 | `tags` | `map(string)` | `{}` | Tags on every resource; `Application` and `Environment` are added by the stack. |
 
 ## Outputs
@@ -434,6 +455,53 @@ import {
   id = "11111111-1111-1111-1111-111111111111"
 }
 ```
+
+## Resources beside the stack
+
+An application sometimes needs a resource that does not belong in its
+stack, and the rule that decides the door is wiring: a resource nothing of
+the application touches is a catalog entry under the application's owner
+tag, a resource the application consumes is a catalog entry the application
+names from its own side, and only a resource that must itself name
+something this stack creates belongs in this stack. Both doors are
+committed in
+`tenants/aws/commercial/accounts/example-prod/aws-account-workloads/terragrunt.hcl`.
+The first is the orders team's load-test harness: the role
+`orders-api-loadtest-runner` (trust `ec2`, `AmazonSSMManagedInstanceCore`,
+read and write on its results bucket) and the bucket
+`orders-api-prod-loadtest-results` (SSE-S3, an allow list holding only that
+role, objects expiring after 30 days, access logs to the cell's
+`access-logs` bucket, `owner = orders`). No identity of this stack reads or
+writes it, so it lives in the catalog with the application's owner tag and
+needs no ordering against this stack at all. The second is shared: the data
+platform team publishes into `example-prod-reference-data` (SSE-S3,
+versioning, TLS-only, and nothing public fixed by the module, access logs
+to `access-logs`, `owner = data-platform`), the catalog role
+`example-reference-data-publisher`, trusted by the `production` environment
+of `example-org/reference-data` through OIDC, has read and write on it, and
+the bucket has no allow list, because its readers are named in their own
+stacks and their identity policies decide. This stack is one of those
+readers: the prod cell sets `reference_bucket_names =
+["example-prod-reference-data"]`, and the task role's policy gains
+`ReadReferenceBuckets` (`s3:ListBucket` on the bucket) and
+`ReadReferenceObjects` (`s3:GetObject` and `s3:GetObjectVersion` on its
+objects), with ARNs built from the partition and the name, so nothing is
+looked up and no dependency is declared. The direction of the reference
+follows the release order: within an account the baseline is applied first,
+then the catalog, then the app stacks (`tools/repo_lint/cells.py` orders the
+waves this way), so an app stack may name a catalog resource and the wave
+order takes care of its existence at apply, but a catalog entry never names a
+resource an app stack creates. The trap both examples teach is the reverse
+direction: a catalog bucket whose `allowed_role_names` lists
+`orders-api-prod-task` fails on the first release, because the catalog is
+applied before this stack exists and the s3-bucket module resolves every
+allowed role by name (at plan on a steady-state run, at apply on a first
+release, when the cell's own pending roles defer the lookup), and a role that
+does not exist fails the run either way. The allow list is a deny fence on
+object data (`modules/aws/s3-bucket`), so a bucket without one is readable by
+exactly the roles whose own policies name it, which is what lets the second
+door work. The dev cell sets nothing and is granted nothing, and `diff`
+between the two cells still says what prod reads.
 
 ## Consuming the outputs
 

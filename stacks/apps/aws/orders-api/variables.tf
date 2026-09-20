@@ -148,6 +148,41 @@ variable "log_retention_days" {
 }
 
 # ---------------------------------------------------------------------------
+# Reference data the task role reads. The buckets are not this stack's: they
+# are catalog entries in the account's aws-account-workloads cell, which is
+# applied in the wave before the app stacks, so an app cell may name a
+# catalog bucket and the bucket exists by the time this policy is applied.
+# The reverse direction, a catalog bucket whose allow list names this
+# stack's task role, fails on the first release because the catalog is
+# applied before the role exists; a bucket read from here therefore has no
+# allow list, and its readers are named in their own stacks.
+# ---------------------------------------------------------------------------
+
+variable "reference_bucket_names" {
+  description = "Names of S3 buckets in this account, created and owned elsewhere (the account's catalog cell, in the wave before this one), whose objects the task role may read. Names, never ARNs: the stack builds the ARN from the partition it discovers, so nothing is looked up and no dependency is declared. Empty (default) grants nothing and leaves the task role's policy exactly as it was."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for n in var.reference_bucket_names : !startswith(n, "arn:") && !strcontains(n, "*") && !strcontains(n, "?")])
+    error_message = "reference_bucket_names holds bucket NAMES, never ARNs and never a wildcard. The stack builds the ARN from the name and the partition it discovers; an ARN would carry a partition the cell should not know, and a wildcard would grant buckets the cell did not name."
+  }
+
+  validation {
+    condition = alltrue([
+      for n in var.reference_bucket_names :
+      can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", n)) && !strcontains(n, "..") && !startswith(n, "xn--") && !can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$", n))
+    ])
+    error_message = "Every entry in reference_bucket_names must be an S3 bucket name as the s3-bucket module accepts it: 3 to 63 lowercase letters, digits, dots, and hyphens, starting and ending with a letter or digit, not containing \"..\", not starting with \"xn--\", and not shaped like an IP address."
+  }
+
+  validation {
+    condition     = length(distinct(var.reference_bucket_names)) == length(var.reference_bucket_names)
+    error_message = "reference_bucket_names lists a bucket twice. Each name renders one ARN in the task role's policy; list it once so the diff says what was granted."
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Tags. Applied to every taggable resource in the stack, with Application
 # and Environment added from the two naming variables so the tags cannot
 # disagree with the names.

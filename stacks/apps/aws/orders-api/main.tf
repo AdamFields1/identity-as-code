@@ -43,9 +43,14 @@
 # this stack's outputs; the README ends with the fragment that does), the
 # images themselves (the publisher role pushes them from the named
 # repository's pipeline), the values of the secrets under the parameter
-# namespace (written by the secrets process, never by Terraform), and any
-# bucket: an API's artifact is its image, and a stack that needs object
-# storage is payments-api, not this one.
+# namespace (written by the secrets process, never by Terraform), any
+# bucket of its own (an API's artifact is its image, and a stack that needs
+# object storage is payments-api, not this one), and the reference data
+# buckets the task role reads when a cell names them in
+# reference_bucket_names, which are the catalog's: entries in the account's
+# aws-account-workloads cell, applied in the wave before this stack, that
+# this stack names by ARN built from the partition and the name and never
+# looks up.
 
 data "aws_partition" "current" {}
 
@@ -108,22 +113,48 @@ locals {
     Environment = var.environment
   })
 
-  # The task role's permissions: the namespace and nothing else. No KMS
-  # statement, because the key policy grants the role directly
-  # (user_role_names below), which is sufficient on its own and keeps the
-  # key ARN, unknown until the key exists, out of a document the module
-  # validates at plan time. No ECR statement either: the task role runs
-  # the application, and the application does not pull its own image.
+  # Reference data the task role reads: bucket names from the cell, ARNs
+  # built from the partition. The buckets are the catalog's, applied in the
+  # wave before this stack, so nothing is looked up, no depends_on is
+  # declared, and the policy renders in full at plan; the wave order takes
+  # care of existence at apply. Two statements, and only when the list is
+  # non-empty: concat with an empty list adds nothing, so a cell that names
+  # no bucket renders byte for byte the document it always did.
+  reference_bucket_arns = [for n in var.reference_bucket_names : "arn:${local.partition}:s3:::${n}"]
+  reference_object_arns = [for n in var.reference_bucket_names : "arn:${local.partition}:s3:::${n}/*"]
+
+  reference_statements = length(var.reference_bucket_names) == 0 ? [] : [
+    {
+      Sid      = "ReadReferenceBuckets"
+      Effect   = "Allow"
+      Action   = ["s3:ListBucket"]
+      Resource = local.reference_bucket_arns
+    },
+    {
+      Sid      = "ReadReferenceObjects"
+      Effect   = "Allow"
+      Action   = ["s3:GetObject", "s3:GetObjectVersion"]
+      Resource = local.reference_object_arns
+    },
+  ]
+
+  # The task role's permissions: the namespace, plus read on the reference
+  # buckets when a cell names any, and nothing else. No KMS statement,
+  # because the key policy grants the role directly (user_role_names
+  # below), which is sufficient on its own and keeps the key ARN, unknown
+  # until the key exists, out of a document the module validates at plan
+  # time. No ECR statement either: the task role runs the application, and
+  # the application does not pull its own image.
   task_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid      = "ReadSecretsUnderNamespace"
         Effect   = "Allow"
         Action   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
         Resource = [local.parameter_arn_prefix, "${local.parameter_arn_prefix}/*"]
       },
-    ]
+    ], local.reference_statements)
   })
 
   # The execution role's extra permission beyond the AWS managed execution

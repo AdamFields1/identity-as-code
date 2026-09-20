@@ -184,6 +184,26 @@ is that its shape is the application's, not the estate's. The reverse also
 holds: an app stack that turns out to be one resource with knobs comes back
 here as an entry.
 
+The two kinds of cell name each other in one direction only. Within an account
+the release train applies the baseline first, then this cell, then the app
+stacks (`tools/repo_lint/cells.py` orders the waves), so an app stack may name
+a bucket of this cell by name, and an entry here never names a role an app
+stack creates. The pattern for an app that reads a catalog bucket is
+`reference_bucket_names` on `stacks/apps/aws/orders-api`: the app cell lists
+the bucket's name, the stack builds the ARN from the partition it discovers
+and grants its task role the read, nothing is looked up, and the wave order
+takes care of existence at apply. The trap is the reverse direction: a bucket
+here whose `allowed_role_names` lists the app's task role fails the first
+release, because this cell is applied before that role exists and the
+s3-bucket module resolves every allowed role by name (at plan on a
+steady-state run, at apply on a first release, when this cell's own pending
+roles defer the lookup), and a role that does not exist fails the run either
+way. A bucket that app stacks read therefore has no allow list and its
+readers' identity policies decide, while a bucket only a role of this cell
+touches (the load-test results in the example-prod cell) keeps one. An entry
+that belongs to an application team rather than to the account carries that
+team's owner tag over the cell's, so the catalog says who it is for.
+
 ## What this stack refuses
 
 - Everything each module refuses (see `modules/aws/iam-service-role`,

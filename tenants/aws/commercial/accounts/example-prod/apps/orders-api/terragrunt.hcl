@@ -13,6 +13,15 @@
 # log group, and the parameter namespace /orders-api/prod/. There is no
 # bucket; the application's artifact is its image.
 #
+# The one resource this cell names that it does not own is the reference
+# data bucket, and the direction of that reference is the rule: an app cell
+# may name a catalog resource, because the catalog
+# (../../aws-account-workloads) is applied in the wave before the app
+# stacks, but a catalog entry never names a role an app stack creates,
+# because on the first release the catalog is applied before that role
+# exists and the allow list would refuse. Dev reads no reference data, so
+# the dev cell does not set the knob and the stack grants nothing.
+#
 # The publisher role trusts one GitHub environment of one repository,
 # example-org/orders-api's production environment, so a prod image can only
 # be pushed by a job that passed that environment's protection rules
@@ -46,6 +55,14 @@ inputs = {
   image_retention_count        = 30
   untagged_image_expiry_days   = 7
   log_retention_days           = 365
+
+  # A name, not an ARN: the stack builds the bucket ARN from the partition
+  # it discovers, so nothing is looked up and no dependency is declared. The
+  # bucket is the catalog's (../../aws-account-workloads, entry
+  # reference-data, owned by data-platform), applied in the wave before this
+  # cell. The task role gains ListBucket on it and GetObject and
+  # GetObjectVersion on its objects; nothing else here changes.
+  reference_bucket_names = ["example-prod-reference-data"]
 
   tags = {
     owner       = "orders"
