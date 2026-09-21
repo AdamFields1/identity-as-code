@@ -83,7 +83,7 @@ decision records carry the reasoning that the commits do not.
 | App sign-on policies and rules: factors, re-authentication, phishing-resistant and hardware-protected possession, zones and groups by name, catch-all DENY, single-factor access only with a stated reason | `modules/okta/app-signon-policy` | `okta_app_signon_policy`, `okta_app_signon_policy_rule` |
 | Custom SAML 2.0 apps with signed responses and assertions (RSA-SHA256), typed attribute statements, https-only endpoints, no inline hook, group assignments by name, vendor onboarding values as outputs | `modules/okta/app-saml` | `okta_app_saml`, `okta_app_group_assignments` |
 | OIDC apps typed web, browser, native, or service: grant and response types derived from the type (code only on the redirect-based types, never implicit), PKCE, `private_key_jwt` by default, refresh token rotation, wildcards off, the client secret never in state, group assignments by name | `modules/okta/app-oauth` | `okta_app_oauth`, `okta_app_group_assignments` |
-| Upstream SAML 2.0 identity providers as a map: signed AuthnRequests (SHA-256) and at least SHA-256 on the response signature, https-only issuer and endpoints, one signing key per certificate from the PEM the other side publishes (a comment above the armor is ignored, a second certificate or a private key is refused) with one active kid, a typed subject match, provisioning off unless asked for, account linking on, groups as ids the stack resolves | `modules/okta/idp-saml` | `okta_idp_saml`, `okta_idp_saml_key` |
+| Upstream SAML 2.0 identity providers as a map: signed AuthnRequests (SHA-256) and at least SHA-256 on the response signature, https-only issuer and endpoints, one signing key per certificate from the PEM the other side publishes (a comment above the armor is ignored, a second certificate or a private key is refused) with one active kid, a typed subject match, provisioning off unless asked for, account linking on but never unfenced (AUTO is refused without a subject filter or a group restriction), groups as ids the stack resolves | `modules/okta/idp-saml` | `okta_idp_saml`, `okta_idp_saml_key` |
 | Routing rules on the org's identity provider discovery policy: username or attribute patterns, SAML2 targets by id, a network condition with zones only under `ZONE`, application and platform conditions typed per entry, unique priorities | `modules/okta/idp-routing-rules` | `okta_policy_rule_idp_discovery` |
 | App registrations and service principals with a drift-detection import contract | `modules/entra/app-registration` | `azuread_application`, `azuread_service_principal`, `azuread_application_federated_identity_credential`, `azuread_app_role_assignment` |
 | Named locations, authentication strengths, and Conditional Access policies | `modules/entra/conditional-access` | `azuread_named_location`, `azuread_authentication_strength_policy`, `azuread_conditional_access_policy` |
@@ -454,13 +454,17 @@ provider discovery policy sends workforce sign-ins, the usernames under the
 corp domain, to it. The two sides exchange exactly three values and nothing
 is typed from a console screen twice: the issuer and the signing certificate
 come from Entra, and the audience and the ACS URL go back from the Okta
-cell's `identity_provider_onboarding` output to the `okta-workforce`
-application in the corp `entra-enterprise-apps` cell, which is why the
+cell's `identity_provider_onboarding` output to that org's own application
+in the corp `entra-enterprise-apps` cell (`okta-workforce` for prod,
+`okta-workforce-dev` for dev: an Entra application carries one audience and
+one reply URL, and Okta mints both per trust), which is why the
 trust is built in two applies with one download between them (the stack
 README gives the order). The certificate is the one file a cell carries
 that is not `.hcl`: the identity provider's public signing certificate,
 saved beside the cell as `entra-signing-<year>.cer` and read by the
-fragment with `file()`, the one function call a cell's inputs may hold. It
+fragment with `file()`, the one function call a cell's inputs may use to
+reach outside the cell's own text (an inline value builder such as the AWS
+identity center cell's `jsonencode` is a value, not an exception). It
 is public key material, not a secret; the private half never leaves Entra,
 and the module reads only the text between the `BEGIN` and `END` lines, so
 the file can say where it came from above them. Rotation is a second file
@@ -470,8 +474,11 @@ modules: Okta signs every AuthnRequest with SHA-256, the identity
 provider's signature is verified with at least SHA-256, endpoints are https
 with no wildcard, and the routing target is SAML2. Provisioning defaults to
 `DISABLED`, the same line `okta-config` draws (the directory of record
-provisions users; just-in-time creation is opt-in), and account linking
-defaults to `AUTO`. The prod rule excludes the Okta Admin Console, and that
+provisions users; just-in-time creation is opt-in). Account linking
+defaults to `AUTO`, and `AUTO` has to be fenced: the module refuses it
+unless the trust also carries the subject filter an asserted username must
+match or the group whose members may be linked, because an unfenced `AUTO`
+links any asserted subject to whichever Okta account matched it. The prod rule excludes the Okta Admin Console, and that
 exclusion is the break-glass line: Okta administrators keep signing in to
 Okta directly with the phishing-resistant factors `okta-config` enrolls, so
 an Entra outage does not lock the org's administrators out; dev carries the
@@ -876,7 +883,8 @@ zero-change gate applied to an object Terraform cannot hold.
   (`okta_idp_oidc`) and social identity providers in Okta; Okta as the
   upstream identity provider for Entra (the inverse direction, which Entra
   calls external identities or direct federation); and the Entra-side
-  `okta-workforce` application's OAuth-consented provisioning connector.
+  OAuth-consented provisioning connector of either `okta-workforce`
+  application.
   The federation stack creates SAML identity providers, their keys, and
   the routing rules that send sign-ins to them, and stops there.
 - Standing (active) Azure role assignments for people. If a person needs
@@ -1035,7 +1043,8 @@ and that the group names the cell carries exist before the first plan.
 
 The federation pieces (`modules/okta/idp-saml`, `modules/okta/idp-routing-rules`,
 `stacks/okta-federation`, the two `okta-federation` cells, and the
-`okta-workforce` entry of the corp `entra-enterprise-apps` cell) were
+`okta-workforce` and `okta-workforce-dev` entries of the corp
+`entra-enterprise-apps` cell) were
 written with Terraform 1.16 available: both modules and the stack pass
 `terraform init -backend=false` and `terraform validate` against the pinned
 provider (okta/okta 4.20.0, recorded in the committed `.terraform.lock.hcl`

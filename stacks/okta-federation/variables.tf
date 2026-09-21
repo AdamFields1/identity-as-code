@@ -62,6 +62,11 @@ variable "identity_providers" {
     file("<get_terragrunt_dir()>/entra-signing-<year>.cer") so the certificate
     is read from the file beside the cell, and active_certificate names the
     entry Okta trusts now.
+
+    response_signature_scope is required, with no default: ANY, the value an
+    omitted attribute would have inherited, accepts a signature on either the
+    Response or the Assertion, so every trust says which element it requires
+    signed. Both cells here set ASSERTION, the element Entra signs.
   EOT
 
   type = map(object({
@@ -75,7 +80,7 @@ variable "identity_providers" {
     acs_type                 = optional(string, "INSTANCE")
     signing_certificates     = map(string)
     active_certificate       = string
-    response_signature_scope = optional(string, "ANY")
+    response_signature_scope = string
     max_clock_skew           = optional(number, 120000)
     honor_persistent_name_id = optional(bool, true)
 

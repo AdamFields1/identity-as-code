@@ -13,7 +13,14 @@ variable "rules" {
     Routing rules to manage on the identity provider discovery policy, keyed by a
     stable logical name (for example "workforce-to-entra"). The key becomes part
     of the Terraform resource address, so renaming a key moves the resource in
-    state. Change the visible name with "name".
+    state; a "moved" block carries it across without touching Okta.
+
+    Renaming the rule is the expensive one, not the key: "name" is ForceNew on
+    okta_policy_rule_idp_discovery, so changing it destroys the rule and
+    creates a new one. Between the two, sign-ins this rule matched fall
+    through to the policy's immutable default rule and land on Okta itself
+    rather than the upstream identity provider. Rename in a change of its own,
+    at a time when that is acceptable.
 
     Allowed value sets below are the provider's, from
     https://registry.terraform.io/providers/okta/okta/latest/docs/resources/policy_rule_idp_discovery,

@@ -14,25 +14,37 @@
 # response signature, https-only endpoints with no wildcard, and SAML2 as
 # the only routing target are fixed by the module and not on the menu.
 # After apply, the stack's identity_provider_onboarding output holds the
-# audience and the ACS URL the Entra side sets as the okta-workforce
-# application's identifier and reply URL.
+# audience and the ACS URL the Entra side sets as the okta-workforce-dev
+# application's identifier and reply URL. That is this org's own application
+# in the corp tenant: an Entra application carries one audience and one reply
+# URL, and Okta mints both per trust, so prod's okta-workforce cannot serve
+# this org too.
 
 inputs = {
   identity_providers = {
-    # The corp Entra tenant, the same entry as prod: the trust is to one
-    # tenant, and the dev org is a second service provider of it, so the
-    # wiring is proven here before the prod cell relies on it. The issuer
-    # and the sign-on URL are the tenant's, in the forms Entra publishes
-    # them (https://sts.windows.net/<tenant id>/ and
+    # The corp Entra tenant, the same entry shape as prod, so the wiring is
+    # proven here before the prod cell relies on it. The trust is to the same
+    # tenant, but not to the same Entra application: with acs_type INSTANCE
+    # (the module default) Okta mints an audience and an ACS URL per trust, so
+    # each Okta org needs its own application on the Entra side. This org's is
+    # okta-workforce-dev; prod's is okta-workforce. The issuer and the sign-on
+    # URL are the tenant's, so they are the same in both cells, in the forms
+    # Entra publishes them (https://sts.windows.net/<tenant id>/ and
     # https://login.microsoftonline.com/<tenant id>/saml2, the latter the
-    # form the Entra module outputs). The certificate is the okta-workforce
-    # application's SAML signing certificate, downloaded in Base64 form to
-    # entra-signing-2026.cer; the file here is a placeholder, and its header
-    # says what replaces it. Entra signs the assertion by default, so the
-    # response signature scope is ASSERTION. Subjects match on email in the
-    # emailAddress format, existing users are linked automatically, and
-    # provisioning stays DISABLED: the directory of record provisions users,
-    # the same line okta-config draws.
+    # form the Entra module outputs). The certificate is the
+    # okta-workforce-dev application's SAML signing certificate, downloaded in
+    # Base64 form to entra-signing-2026.cer; the file here is a placeholder,
+    # and its header says what replaces it. Entra signs the assertion by
+    # default, so the response signature scope is ASSERTION. Subjects match on
+    # email in the emailAddress format and provisioning stays DISABLED: the
+    # directory of record provisions users, the same line okta-config draws.
+    #
+    # Account linking is AUTO, and it is fenced on both sides, the same way
+    # prod fences it: the subject filter is the pattern an asserted username
+    # must match, and group_include is the group whose existing members may be
+    # linked. Without those two, an assertion for any address at all would be
+    # linked automatically to whichever Okta user matched it on email, an Okta
+    # administrator included.
     entra = {
       name        = "Entra ID (corp tenant)"
       issuer      = "https://sts.windows.net/11111111-1111-1111-1111-111111111111/"
@@ -49,10 +61,15 @@ inputs = {
       subject = {
         match_type = "EMAIL"
         format     = ["urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"]
+        filter     = "(\\S+@example\\.com)"
       }
 
       provisioning = { action = "DISABLED" }
-      account_link = { action = "AUTO" }
+
+      account_link = {
+        action        = "AUTO"
+        group_include = ["all-workforce"]
+      }
     }
   }
 }

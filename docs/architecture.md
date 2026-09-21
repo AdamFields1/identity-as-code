@@ -225,8 +225,8 @@ flowchart LR
   PROD -.->|dependencies block: zones named by the policy rules| PRODA
   SOF --> DEVF
   SOF --> PRODF
-  DEV -.->|dependencies block: zones named by the routing rules| DEVF
-  PROD -.->|dependencies block: zones named by the routing rules| PRODF
+  DEV -.->|dependencies block: zones a routing rule may name| DEVF
+  PROD -.->|dependencies block: zones a routing rule may name| PRODF
   SEA --> CORP
   SEE --> CORP
   SEC --> CORP
@@ -319,7 +319,9 @@ name the zones `okta-config` creates, read no output from it, and carry a
 Terragrunt `dependencies` block only so they plan after the config cell has
 applied (ADR 0020, ADR 0022). `okta-federation` has no edge to
 `entra-enterprise-apps` even though each org's cell is one side of a trust
-whose other side is the `okta-workforce` application in the corp cell: the
+whose other side is that org's own application in the corp cell
+(`okta-workforce` for prod, `okta-workforce-dev` for dev, one per Okta org
+because Okta mints an audience and an ACS URL per trust): the
 coupling is three values exchanged across the two trees (the issuer and the
 signing certificate one way, the audience and the ACS URL the other), read
 from an output or a portal download and set as values, never a cross-family
@@ -522,7 +524,7 @@ flowchart TB
     DP -->|policy_id| RR
   end
 
-  ENTRA["the Entra side: okta-workforce in the corp entra-enterprise-apps cell"] -.->|issuer and signing certificate, a portal download or the certificate resource's value| CER
+  ENTRA["the Entra side: this org's application in the corp entra-enterprise-apps cell"] -.->|issuer and signing certificate, a portal download| CER
   IDP -->|identity_provider_onboarding: audience and ACS URL, never a secret| ENTRA
 ```
 
@@ -920,7 +922,7 @@ sequenceDiagram
     Rel->>Okta: plan prod gated wave 0 (okta-config, artifact saved, plan_gate report in the step summary)
   end
   Rel->>Okta: apply dev wave 0
-  Rel->>Okta: plan and apply dev wave 1 (okta-applications and okta-federation, after the zones they name exist)
+  Rel->>Okta: plan and apply dev wave 1 (okta-applications and okta-federation, after the zones they may name exist)
   Rel->>Gate: soak gate waits
   Gate-->>Rel: human approval after wait timer
   Rel->>Okta: apply prod gated wave 0 from the merge-time plan artifact

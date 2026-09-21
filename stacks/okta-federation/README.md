@@ -33,10 +33,11 @@ OIDC upstream identity providers (`okta_idp_oidc`) and social identity
 providers are different shapes and are not offered here. The inverse
 direction, Okta as an upstream identity provider for Entra (what Entra calls
 external identities or direct federation), is a different trust and is out of
-scope. The Entra side of this trust is an enterprise application in the corp
-`entra-enterprise-apps` cell (`okta-workforce` in its `saml-apps.hcl`), managed
-by `stacks/entra-enterprise-apps`, and that application's OAuth-consented
-provisioning connector is not managed anywhere in this repository. The
+scope. The Entra side of this trust is an enterprise application per Okta org
+in the corp `entra-enterprise-apps` cell (`okta-workforce` for the prod org
+and `okta-workforce-dev` for the dev org, in its `saml-apps.hcl`), managed
+by `stacks/entra-enterprise-apps`, and those applications' OAuth-consented
+provisioning connectors are not managed anywhere in this repository. The
 `IDP_DISCOVERY` policy itself is created by Okta with the org and only looked
 up here. The groups the cells name are created in Okta by the upstream
 identity provider (the corp Entra tenant, as the repository README presents
@@ -106,10 +107,15 @@ inputs = {
       subject = {
         match_type = "EMAIL"
         format     = ["urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"]
+        filter     = "(\\S+@example\\.com)"
       }
 
       provisioning = { action = "DISABLED" }
-      account_link = { action = "AUTO" }
+
+      account_link = {
+        action        = "AUTO"
+        group_include = ["all-workforce"]
+      }
     }
   }
 }
@@ -117,11 +123,22 @@ inputs = {
 
 Everything the other side would otherwise be asked to accept is fixed by the
 module and not in the cell: Okta signs every AuthnRequest with SHA-256, the
-identity provider's signature is verified with at least SHA-256, the ACS
-binding is HTTP-POST, and the issuer and endpoints are https with no
-wildcard. `response_signature_scope` is the one signature setting the cell
-chooses, because it describes the identity provider's behaviour: Entra signs
-the assertion by default, so the cells set `ASSERTION`.
+identity provider's signature is verified with at least SHA-256, the
+`NameIDPolicy` asks for the first `subject.format`, the ACS binding is
+HTTP-POST, and the issuer and endpoints are https with no wildcard.
+`response_signature_scope` is the one signature setting the cell chooses,
+because it describes the identity provider's behaviour: Entra signs the
+assertion by default, so the cells set `ASSERTION`. It is required rather
+than defaulted, so no trust inherits `ANY`, the scope that accepts a
+signature on either element.
+
+The two account-link lines are not optional decoration. `account_link.action`
+is `AUTO`, so an asserted user is joined to the Okta user the subject match
+finds; `subject.filter` is the pattern an asserted username must match, and
+`group_include` is the group whose existing members may be linked. With
+neither of those, the trust would link any subject the upstream cares to
+assert to whichever Okta account matched it, an Okta administrator included,
+and the module refuses that combination rather than shipping it.
 
 The routing rule says who is sent there. Workforce sign-ins are the usernames
 that end in the corp domain; the rule routes them to the trust by key and, in
@@ -162,30 +179,60 @@ they are the enterprise application's identifier and reply URL.
 
 The two sides each publish values the other needs, and neither exists first,
 so the trust is built in two applies with one download between them. The
-parity is fixed: the Entra side is the `okta-workforce` application in the
-corp `entra-enterprise-apps` cell, and the two sides exchange three values,
-issuer and certificate one way, audience and ACS URL the other.
+parity is fixed: each Okta org has its own application in the corp
+`entra-enterprise-apps` cell, `okta-workforce` for the prod org and
+`okta-workforce-dev` for the dev org, and the two sides exchange three
+values, issuer and certificate one way, audience and ACS URL the other.
+
+One Entra application serves exactly one Okta org. An application carries one
+identifier URI and one reply URL, and with `acs_type = "INSTANCE"` (the
+default) Okta mints a distinct audience and a distinct
+`/sso/saml2/<identity provider id>` ACS URL per trust, on that org's own
+host. Adding a second org's reply URL to one application would mean one
+assertion, issued for one audience, postable to either org's endpoint, so a
+new org is a new entry in `saml-apps.hcl` rather than a second value on an
+existing one.
 
 1. **The Entra cell applies first, with provisional values.** The corp
-   `entra-enterprise-apps` cell holds `okta-workforce` with a provisional
+   `entra-enterprise-apps` cell holds that org's entry with a provisional
    identifier and reply URL, because the Okta side's values do not exist yet.
    Entra mints the application's SAML signing certificate on that apply; the
    cell's `signing_certificates` output carries its thumbprint.
 2. **The certificate crosses, and the Okta cell applies.** The certificate is
    downloaded in Base64 form from the Entra portal (the enterprise
-   application's SAML signing certificate) or read from the `value` attribute
-   of the module's `azuread_service_principal_token_signing_certificate`
-   resource, and saved as `<cell>/entra-signing-<year>.cer`. The Okta cell
-   applies; the identity provider is created with that certificate as its key,
-   the routing rule is created after it, and the `identity_provider_onboarding`
-   output hands back the `audience` and `acs_url`. Compare the `thumbprint` in
-   the `identity_providers` output with the Entra cell's
-   `signing_certificates` thumbprint before going on: the two must match.
-3. **The Entra cell sets them and applies again.** `identifier_uris` becomes
-   the audience and `reply_urls` becomes the ACS URL; the apply updates the
-   application in place. A test sign-in from a workforce account is the
-   acceptance, and an administrator's direct sign-in to the admin console is
-   the second one.
+   application's SAML signing certificate) and saved as
+   `<cell>/entra-signing-<year>.cer`. The same bytes are in the
+   `azuread_service_principal_token_signing_certificate` resource's `value`
+   attribute, but no output of this repository exposes it, and the provider
+   documents it as PEM without the `BEGIN CERTIFICATE` and `END CERTIFICATE`
+   lines, which the module requires, so the portal download is the path. The
+   Okta cell applies; the identity provider is created with that certificate
+   as its key, the routing rule is created after it, and the
+   `identity_provider_onboarding` output hands back the `audience` and
+   `acs_url`.
+
+   Check that the right file crossed before going on. The two sides print
+   different hashes, so compare like with like: the Entra cell's
+   `signing_certificates` thumbprint is a hex SHA-1 fingerprint, and the
+   `thumbprint` in the `identity_providers` output is Okta's `x5t_s256`, the
+   base64url SHA-256 of the DER. Either check settles it, from the file
+   itself:
+
+   ```sh
+   # matches the Entra cell's signing_certificates thumbprint
+   openssl x509 -in <cell>/entra-signing-<year>.cer -noout -fingerprint -sha1
+
+   # matches the thumbprint in the identity_providers output
+   openssl x509 -in <cell>/entra-signing-<year>.cer -outform DER \
+     | openssl dgst -sha256 -binary | openssl base64 | tr '+/' '-_' | tr -d '='
+   ```
+3. **The Entra cell sets them and applies again.** On that org's entry,
+   `identifier_uris` becomes its audience and `reply_urls` becomes its ACS
+   URL; the apply updates the application in place. Each entry carries the one
+   org's pair, so bootstrapping the second org adds an entry and never
+   overwrites the first one's values. A test sign-in from a workforce account
+   is the acceptance, and an administrator's direct sign-in to the admin
+   console is the second one.
 
 The issuer and the sign-on URL cross in step 2 as well, but they are the
 tenant's and not the application's, so they are known before step 1 and the
@@ -197,9 +244,9 @@ Okta trusts exactly one key per identity provider, the one `active_certificate`
 names, so a rotation is two entries and a flip, coordinated with the Entra
 side's "make certificate active" step:
 
-1. Entra mints the new certificate (a new `signing_certificate` on the
-   `okta-workforce` entry of the Entra cell, or a certificate added in the
-   portal and left inactive). Download it in Base64 form as
+1. Entra mints the new certificate (a new `signing_certificate` on that
+   org's entry of the Entra cell, or a certificate added in the portal and
+   left inactive). Download it in Base64 form as
    `<cell>/entra-signing-<year>.cer` beside the old one.
 2. Add the entry and flip the active one; the old entry stays:
 
@@ -216,10 +263,19 @@ side's "make certificate active" step:
    trust yet, so the flip is a coordinated change with a short window, not a
    zero-downtime one by itself.
 3. Once Entra has activated its new certificate and a sign-in has been seen
-   through it, remove the `"2026"` entry and its file in a later change. The
-   provider documents the key resource as create-or-remove, never update, and
-   a key an identity provider still references cannot be deleted, which is why
-   the flip comes before the removal.
+   through it, remove the `"2026"` entry and its file in a later change. A key
+   an identity provider still references cannot be deleted, which is why the
+   flip comes before the removal.
+
+Add a file; do not edit one. `okta_idp_saml_key` does have an update in the
+pinned provider, and it creates a new key, rewrites the `kid` of every SAML2
+identity provider in the org that still pointed at the old one, trusts this
+stack does not manage included, and then deletes the old key, all behind a
+plan that shows only `~ x5c`. The module keeps that path unreachable by
+putting the certificate body in the key's resource address, so replacing a
+`.cer` in place is a create and a destroy rather than an update; rotating by
+adding a file and flipping `active_certificate` is the shape the module and
+the `.cer` headers both describe.
 
 The `identity_providers` output shows both keys under `keys` while a rotation
 is in progress, with each one's `expires_at`, so the reviewer can see which is
@@ -251,6 +307,11 @@ refuses what only the whole cell can show:
 - At plan time, from the lookups: a group, zone, or application name that does
   not exist in the org, and an org whose identity provider discovery policy
   cannot be read.
+- At plan time, from a postcondition: an application whose label is not the
+  label the cell asked for. `data.okta_app` queries Okta with a starts-with
+  match and keeps the first result when no exact label is found, so without
+  the postcondition a mistyped or renamed label would bind a rule's include or
+  exclude to some other application and still plan green.
 
 ## Provider configuration
 

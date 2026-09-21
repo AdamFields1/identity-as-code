@@ -59,7 +59,9 @@
 # the inverse direction, Okta as an upstream identity provider for Entra
 # (external identities or direct federation on the Entra side); the Entra-side
 # enterprise application, which the corp entra-enterprise-apps cell holds as
-# okta-workforce; that application's OAuth-consented provisioning connector;
+# one entry per Okta org (okta-workforce, okta-workforce-dev), because an
+# application carries one audience and one reply URL while Okta mints both per
+# trust; those applications' OAuth-consented provisioning connectors;
 # the IDP_DISCOVERY policy itself, which Okta creates with the org; and the
 # groups and zones the cells name, which the upstream identity provider and
 # the okta-config cell create.
@@ -109,10 +111,17 @@ data "okta_network_zone" "by_name" {
 # ---------------------------------------------------------------------------
 # Application lookups. One data source per distinct label across every routing
 # rule's APP include and exclude entries. The data source needs only the label
-# (id, label, and label_prefix conflict with one another, and the provider's
-# documentation for data okta_app says the label query searches name and label,
-# so two apps with near-identical labels could collide); the label a rule
+# (id, label, and label_prefix conflict with one another); the label a rule
 # names in practice is "Okta Admin Console", which Okta creates once per org.
+#
+# The postcondition is the guard, and it is not theoretical. The data source
+# queries Okta with ?q=<label>, which the API matches as a starts-with over
+# both name and label, and then looks for an exact label among the results; if
+# none of them has it, the provider silently keeps the first result rather than
+# failing. A renamed or mistyped label would therefore plan green against some
+# other application, and in prod the rule that excludes the admin console would
+# exclude that other application instead, which is the break-glass line ADR
+# 0022 says this exclusion exists to hold.
 # ---------------------------------------------------------------------------
 
 locals {
@@ -128,6 +137,13 @@ data "okta_app" "by_label" {
   for_each = local.all_app_labels
 
   label = each.value
+
+  lifecycle {
+    postcondition {
+      condition     = self.label == each.value
+      error_message = "data.okta_app resolved a different application than the label asked for. The okta_app data source keeps the first near-match when no result carries the exact label, so a routing rule's include or exclude would bind to the wrong application and plan green. Check the label in the cell against the application's label in the org."
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------

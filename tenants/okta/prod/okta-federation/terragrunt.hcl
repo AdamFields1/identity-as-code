@@ -32,7 +32,11 @@
 #
 # The other side of this trust is the okta-workforce application in the corp
 # entra-enterprise-apps cell (tenants/azure/corp/entra-enterprise-apps/
-# saml-apps.hcl). The two sides exchange three values and nothing else: the
+# saml-apps.hcl), which serves this org and no other: an Entra application
+# carries one identifier URI and one reply URL, and with acs_type INSTANCE
+# (the module default) Okta mints an audience and an ACS URL per trust, so
+# the dev org has its own application, okta-workforce-dev, beside it. The
+# two sides exchange three values and nothing else: the
 # issuer and the signing certificate come this way, from Entra, and the
 # audience and the ACS URL go the other way, from this cell's
 # identity_provider_onboarding output after the first apply. The stack

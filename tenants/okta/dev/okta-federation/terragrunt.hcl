@@ -18,24 +18,32 @@
 #
 # Same stack as prod. Dev applies on merge and prod waits at the soak gate,
 # so every shape prod carries is exercised here first: the same identity
-# provider (the corp Entra tenant, trusting the signing certificate carried
-# beside this file as entra-signing-2026.cer) and the same routing rule,
-# Workforce to Entra. The one difference from prod is the whole story of
-# what dev proves that prod does not rely on:
+# provider shape against the same Entra tenant (trusting the signing
+# certificate carried beside this file as entra-signing-2026.cer) and the
+# same routing rule, Workforce to Entra. Two things differ from prod, and
+# each is the whole story of what dev proves that prod does not rely on:
 #   - the rule carries no app_exclude, so dev proves the whole path
 #     including the Okta Admin Console; prod excludes the console so its
 #     administrators keep a direct path into Okta, and that exclusion is
 #     never exercised here
+#   - the Entra application is this org's own, because one application
+#     cannot serve two orgs (see below)
 # The org is the dev org on oktapreview.com; every value is a placeholder
 # under example.com and the placeholder tenant id.
 #
-# The other side of this trust is the okta-workforce application in the corp
-# entra-enterprise-apps cell (tenants/azure/corp/entra-enterprise-apps/
-# saml-apps.hcl). The two sides exchange three values and nothing else: the
-# issuer and the signing certificate come this way, from Entra, and the
-# audience and the ACS URL go the other way, from this cell's
-# identity_provider_onboarding output after the first apply. The stack
-# README, "Bootstrapping the trust in two applies", says the order.
+# The other side of this trust is the okta-workforce-dev application in the
+# corp entra-enterprise-apps cell (tenants/azure/corp/entra-enterprise-apps/
+# saml-apps.hcl), beside the okta-workforce application that is prod's side.
+# One Entra application serves exactly one Okta org: an application carries
+# one identifier URI and one reply URL, and with acs_type INSTANCE (the
+# module default) Okta mints an audience and a /sso/saml2/<identity provider
+# id> ACS URL per trust, on this org's own host. Two orgs on one application
+# would mean one assertion, issued for one audience, postable to either org.
+# The two sides exchange three values and nothing else: the issuer and the
+# signing certificate come this way, from Entra, and the audience and the
+# ACS URL go the other way, from this cell's identity_provider_onboarding
+# output after the first apply. The stack README, "Bootstrapping the trust
+# in two applies", says the order.
 #
 # Nothing below is an id. Identity providers are named by map key, network
 # zones by the name the org's okta-config cell gives them, and groups by

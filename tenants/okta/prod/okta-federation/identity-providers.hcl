@@ -27,9 +27,17 @@ inputs = {
     # entra-signing-2026.cer; the file here is a placeholder, and its header
     # says what replaces it. Entra signs the assertion by default, so the
     # response signature scope is ASSERTION. Subjects match on email in the
-    # emailAddress format, existing users are linked automatically, and
-    # provisioning stays DISABLED: the directory of record provisions users,
-    # the same line okta-config draws.
+    # emailAddress format and provisioning stays DISABLED: the directory of
+    # record provisions users, the same line okta-config draws.
+    #
+    # Account linking is AUTO, and it is fenced on both sides. The subject
+    # filter is the pattern an asserted username must match, so this trust can
+    # assert nothing outside the corp domain, and group_include is the group
+    # whose existing members may be linked, the same all-workforce group the
+    # Entra application assigns. Without those two, an assertion for any
+    # address at all would be linked automatically to whichever Okta user
+    # matched it on email, an Okta administrator included; they are the only
+    # account-link guards the resource offers.
     entra = {
       name        = "Entra ID (corp tenant)"
       issuer      = "https://sts.windows.net/11111111-1111-1111-1111-111111111111/"
@@ -46,10 +54,15 @@ inputs = {
       subject = {
         match_type = "EMAIL"
         format     = ["urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"]
+        filter     = "(\\S+@example\\.com)"
       }
 
       provisioning = { action = "DISABLED" }
-      account_link = { action = "AUTO" }
+
+      account_link = {
+        action        = "AUTO"
+        group_include = ["all-workforce"]
+      }
     }
   }
 }

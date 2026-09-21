@@ -14,7 +14,7 @@ output "identity_provider_onboarding" {
 }
 
 output "identity_providers" {
-  description = "Map of identity provider key to { id, name, status, audience, acs_url, active_certificate, kid, thumbprint, keys }. kid and thumbprint (x5t_s256) are the active certificate's; keys maps every certificate name to { kid, x5t_s256, expires_at }, so a rotation in progress shows both. Nothing here is secret: a kid is a reference and a thumbprint is a hash of a public certificate."
+  description = "Map of identity provider key to { id, name, status, audience, acs_url, active_certificate, kid, thumbprint, keys }. kid and thumbprint (x5t_s256) are the active certificate's; keys maps every certificate name to { kid, x5t_s256, expires_at }, so a rotation in progress shows both. thumbprint is Okta's form, the base64url SHA-256 of the certificate's DER, and not the hex SHA-1 fingerprint the Entra cell reports; the stack README says how to derive one from the .cer to compare them. Nothing here is secret: a kid is a reference and a thumbprint is a hash of a public certificate."
   value = {
     for key, p in module.identity_providers.identity_providers : key => {
       id                 = p.id

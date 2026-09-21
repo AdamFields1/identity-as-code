@@ -17,7 +17,8 @@
 #   wave 0        dev/okta-config
 #   wave 1        dev/okta-applications and dev/okta-federation (after the
 #                 config cell, whose network zones their sign-on policy
-#                 rules and routing rules name)
+#                 rules name and a routing rule with a ZONE condition
+#                 would name)
 #   gated wave 0  prod/okta-config
 #   gated wave 1  prod/okta-applications and prod/okta-federation
 #
@@ -26,10 +27,12 @@
 # terragrunt.hcl and orders the cells by the rules this train used to state
 # by hand (docs/adr/0018): a Terragrunt dependencies block, and dev before
 # prod. The applications cell and the federation cell of each org carry
-# dependencies = ["../okta-config"] because their rules (sign-on policy
-# rules in one, routing rules in the other) name network zones by the
-# names the config cell creates them with, resolved at plan time; nothing
-# else in the family reads another cell's outputs, so the rest of the order
+# dependencies = ["../okta-config"] because their rules name network zones
+# by the names the config cell creates them with, resolved at plan time: the
+# sign-on policy rules do so today, and a routing rule with a ZONE condition
+# would do the same, which is why the federation cell carries the block
+# whether or not a rule in it names a zone right now; nothing else in the
+# family reads another cell's outputs, so the rest of the order
 # is a release rule, and it is stated once, in cells.py, where the pull
 # request workflow and the lint job read the same rule. A new cell needs no
 # edit here: it lands in its wave. What does need an edit is a wave count

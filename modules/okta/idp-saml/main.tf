@@ -19,12 +19,12 @@
 # takes the bare base64 body (the x5c form), so the module strips the BEGIN and
 # END lines and every whitespace character and refuses anything that is not
 # exactly one certificate. One okta_idp_saml_key is created per certificate
-# entry, and the identity provider's kid is wired to the entry the cell names in
-# active_certificate. Rotation is therefore: add the new entry, flip
-# active_certificate, apply, and remove the old entry after the identity
-# provider has activated its new certificate. Okta trusts exactly one kid per
-# identity provider, so the flip is coordinated with the other side and is not
-# zero-downtime by itself.
+# entry, addressed by the body it carries, and the identity provider's kid is
+# wired to the entry the cell names in active_certificate. Rotation is
+# therefore: add the new entry, flip active_certificate, apply, and remove the
+# old entry after the identity provider has activated its new certificate. Okta
+# trusts exactly one kid per identity provider, so the flip is coordinated with
+# the other side and is not zero-downtime by itself.
 #
 # Groups are ids here. The calling stack resolves names with the okta_group data
 # source, the way okta-config resolves groups_included, so the lookup happens
@@ -32,33 +32,61 @@
 
 locals {
   # Every certificate of every identity provider, flattened to one key resource
-  # each. The composite key is "<identity provider key>/<certificate name>", so
-  # the resource address says which trust and which certificate it is.
-  certificates = merge([
+  # each, keyed "<identity provider key>/<certificate name>".
+  #
+  # The value is the x5c body: the text between the BEGIN and END lines with
+  # every whitespace character removed. Lines outside the armor (a comment that
+  # says where the file came from) are ignored by construction. The variable
+  # validation has already refused text that is not exactly one certificate, so
+  # the regex has exactly one match.
+  certificate_bodies = merge([
     for idp_key, idp in var.identity_providers : {
       for cert_name, pem in idp.signing_certificates :
-      "${idp_key}/${cert_name}" => {
-        idp_key   = idp_key
-        cert_name = cert_name
-        # The x5c body: the text between the BEGIN and END lines with every
-        # whitespace character removed. Lines outside the armor (a comment that
-        # says where the file came from) are ignored by construction. The
-        # variable validation has already refused text that is not exactly one
-        # certificate, so the regex has exactly one match.
-        x5c = replace(regex("-----BEGIN CERTIFICATE-----([\\s\\S]*?)-----END CERTIFICATE-----", pem)[0], "/\\s+/", "")
-      }
+      "${idp_key}/${cert_name}" => replace(regex("-----BEGIN CERTIFICATE-----([\\s\\S]*?)-----END CERTIFICATE-----", pem)[0], "/\\s+/", "")
     }
   ]...)
+
+  # The resource address of each entry's key: the entry plus the first twelve
+  # hex digits of its body's SHA-256. The certificate is part of the address on
+  # purpose (see the resource below), so everything that references a key goes
+  # through this map rather than building the address from names.
+  certificate_keys = {
+    for entry_key, x5c in local.certificate_bodies :
+    entry_key => "${entry_key}/${substr(sha256(x5c), 0, 12)}"
+  }
+
+  certificates = {
+    for entry_key, x5c in local.certificate_bodies :
+    local.certificate_keys[entry_key] => x5c
+  }
 }
 
-# One signing key per certificate entry. The provider documents this resource as
-# create-or-remove, never update: a key that an identity provider still
-# references cannot be deleted, which is why the identity provider's kid moves
-# to the new entry first and the old entry is removed on a later apply.
+# One signing key per certificate entry, addressed by the certificate it
+# carries.
+#
+# okta_idp_saml_key has an Update, and it is a dangerous one: the provider
+# creates the new key, then lists EVERY SAML2 identity provider in the org and
+# rewrites the kid of each one that still pointed at the old key, including
+# trusts this module does not manage and whose ids are nowhere in its state,
+# and the plan for it shows nothing but "~ x5c" on this resource. Editing a
+# .cer in place would otherwise be exactly that update, because x5c is not
+# ForceNew in the pinned provider.
+#
+# So the body is part of the resource address: a changed certificate is a
+# different instance, which is a create and a destroy rather than an update,
+# and the provider's Update never runs. create_before_destroy makes the order
+# the one Okta requires: the new key is created, the identity provider's kid
+# moves to it, and only then is the old key deleted, which Okta refuses while a
+# trust still references it. Removing a certificate entry from the cell is
+# still a plain delete.
 resource "okta_idp_saml_key" "this" {
   for_each = local.certificates
 
-  x5c = [each.value.x5c]
+  x5c = [each.value]
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "okta_idp_saml" "this" {
@@ -72,7 +100,7 @@ resource "okta_idp_saml" "this" {
   # entry so a typo in active_certificate is a plan error, not a broken trust.
   issuer      = each.value.issuer
   issuer_mode = each.value.issuer_mode
-  kid         = okta_idp_saml_key.this["${each.key}/${each.value.active_certificate}"].kid
+  kid         = okta_idp_saml_key.this[local.certificate_keys["${each.key}/${each.value.active_certificate}"]].kid
 
   # Where Okta sends the AuthnRequest. sso_destination defaults to null, which
   # the provider treats as the sso_url; a cell sets it only when the identity
@@ -96,6 +124,16 @@ resource "okta_idp_saml" "this" {
   request_signature_scope      = "REQUEST"
   response_signature_algorithm = "SHA-256"
   response_signature_scope     = each.value.response_signature_scope
+
+  # Also fixed, and derived rather than chosen: the Format of the NameIDPolicy
+  # Okta puts in the AuthnRequest is the first entry of subject.format, the
+  # formats this trust accepts back. The provider would otherwise default it to
+  # urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified, so Okta would ask
+  # for an unspecified NameID while refusing anything but subject.format in the
+  # response. Entra ignores the NameIDPolicy and sends what its application is
+  # configured for, but an identity provider that honors it strictly would
+  # answer with an unspecified NameID and Okta would reject the assertion.
+  name_format = each.value.subject.format[0]
 
   max_clock_skew           = each.value.max_clock_skew
   honor_persistent_name_id = each.value.honor_persistent_name_id

@@ -48,10 +48,14 @@ variable "identity_providers" {
                                Every entry becomes an Okta key; only this one is
                                the identity provider's kid. Rotation flips it.
     response_signature_scope : which element must carry the identity provider's
-                               signature: RESPONSE, ASSERTION, or ANY (default,
-                               either satisfies Okta). Entra signs the assertion
-                               by default, so a cell federating to Entra sets
-                               ASSERTION.
+                               signature: RESPONSE, ASSERTION, or ANY (either
+                               satisfies Okta). Required, with no default, the
+                               same way the algorithms are not a choice at all:
+                               ANY is the loosest of the three and is what an
+                               omitted attribute would inherit silently, so
+                               every trust states which element it requires
+                               signed. Entra signs the assertion by default, so
+                               a cell federating to Entra sets ASSERTION.
     max_clock_skew           : milliseconds of clock difference Okta tolerates
                                when it checks the assertion's timestamps.
                                Default 120000, two minutes: the API's documented
@@ -71,10 +75,15 @@ variable "identity_providers" {
                                urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress.
       filter                 : optional regular expression the asserted username
                                must match, for example "(\S+@example\.com)".
-                               The API recommends one whenever an org trusts
-                               more than one identity provider, because it stops
-                               this identity provider asserting a user that
-                               belongs to another.
+                               The API calls it a security best practice: with
+                               no filter, the identity provider may issue an
+                               assertion for any user of the org, including
+                               partners, directory users, and administrators.
+                               Required here whenever account_link.action is
+                               AUTO and account_link.group_include is empty,
+                               because those three together are an automatic
+                               link from any asserted subject to any Okta
+                               account the match type finds.
       username_template      : Okta expression that turns the asserted subject
                                into the Okta username. Default
                                idpuser.subjectNameId, the NameID as sent.
@@ -107,11 +116,20 @@ variable "identity_providers" {
       group_include          : Okta group ids; when set, only existing users in
                                one of them may be linked. Ids, resolved from
                                names by the calling stack. Refused when action
-                               is DISABLED.
+                               is DISABLED. Required under AUTO when
+                               subject.filter is null; either one narrows which
+                               asserted subject may land on which Okta account.
+                               Okta's account-link filters that exclude named
+                               users or administrators outright are not
+                               attributes of okta_idp_saml, so these two are
+                               the only guards the resource offers.
 
     Fixed and not inputs: Okta signs every AuthnRequest (request_signature_scope
     REQUEST) with SHA-256, requires at least SHA-256 on the identity provider's
-    signature, and the ACS binding is HTTP-POST.
+    signature, and the ACS binding is HTTP-POST. The NameIDPolicy format of the
+    AuthnRequest (name_format) is fixed too, but derived rather than chosen: it
+    is the first entry of subject.format, so Okta asks for a format it accepts
+    back instead of the provider's unspecified default.
   EOT
 
   type = map(object({
@@ -125,7 +143,7 @@ variable "identity_providers" {
     acs_type                 = optional(string, "INSTANCE")
     signing_certificates     = map(string)
     active_certificate       = string
-    response_signature_scope = optional(string, "ANY")
+    response_signature_scope = string
     max_clock_skew           = optional(number, 120000)
     honor_persistent_name_id = optional(bool, true)
 
@@ -196,7 +214,7 @@ variable "identity_providers" {
 
   validation {
     condition     = alltrue([for p in var.identity_providers : contains(["RESPONSE", "ASSERTION", "ANY"], p.response_signature_scope)])
-    error_message = "response_signature_scope must be RESPONSE, ASSERTION, or ANY. The signing algorithm is fixed at SHA-256 and is not an input."
+    error_message = "response_signature_scope must be RESPONSE, ASSERTION, or ANY, and it has no default: ANY accepts a signature on either element, which is the loosest of the three, and a trust should say which one it requires signed. The signing algorithm is fixed at SHA-256 and is not an input."
   }
 
   validation {
@@ -346,6 +364,14 @@ variable "identity_providers" {
   validation {
     condition     = alltrue([for p in var.identity_providers : p.account_link.action == "AUTO" || length(p.account_link.group_include) == 0])
     error_message = "account_link.group_include restricts which existing users may be linked, so it is only read when account_link.action is AUTO. With DISABLED it would be dropped silently."
+  }
+
+  validation {
+    condition = alltrue([
+      for p in var.identity_providers :
+      p.account_link.action != "AUTO" || p.subject.filter != null || length(p.account_link.group_include) > 0
+    ])
+    error_message = "account_link.action AUTO with neither subject.filter nor account_link.group_include set would let this identity provider assert any subject at all and have Okta link it, automatically, to whichever existing user the match type finds anywhere in the org, Okta super administrators included. Set subject.filter to the pattern the trusted usernames match, for example \"(\\S+@example\\.com)\", or set account_link.group_include to the groups whose members may be linked, or both. These two are the only account-link guards okta_idp_saml exposes."
   }
 
   validation {
