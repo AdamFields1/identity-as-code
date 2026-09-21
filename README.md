@@ -1071,7 +1071,7 @@ Both cells were rendered offline with `terragrunt render-json` to confirm
 the state key, the `okta-config` dependency, the four merged input keys,
 and that the rendered `signing_certificates` entry holds the certificate
 file's text, comment lines and armor included; the corp Entra cell was
-rendered the same way and carries three applications. The placeholder
+rendered the same way and carries four applications. The placeholder
 certificate in each cell was generated with openssl (rsa:2048, ten years)
 with its private key written to the null device, so no key ever existed on
 disk, and the module's mocked plan read it through its comment lines. Those
