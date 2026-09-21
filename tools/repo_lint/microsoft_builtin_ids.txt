@@ -1,8 +1,9 @@
 # GUIDs that may appear in this repository without being placeholders.
 #
 # Every one is a public constant Microsoft publishes: an Azure built-in role
-# definition id, an Entra directory role template id, or a first-party
-# application id. They are the same in every tenant, so their presence in a
+# definition id, an Entra directory role template id, a first-party
+# application id, or an Entra application template id. They are the same in
+# every tenant, so their presence in a
 # file identifies nothing about an estate. Anything else that looks like a
 # GUID must be a repeated digit (11111111-1111-...) or all zeros; the
 # placeholders check in repo_lint.py refuses the rest.
@@ -44,3 +45,6 @@ fdd7a751-b60b-444a-984c-02652fe8fa1c  Groups Administrator
 
 # --- First-party application ids
 00000003-0000-0000-c000-000000000000  Microsoft Graph; the resource every app role grant names
+
+# --- Entra application templates (Microsoft Graph applicationTemplate: instantiate)
+8adf8e6e-67b2-4cf2-a259-e3dc5476c621  Non-gallery application template, global service; the default of custom_template_id in modules/entra/saml-enterprise-app

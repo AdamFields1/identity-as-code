@@ -112,6 +112,10 @@ VENDOR_DOMAINS: tuple[str, ...] = (
     "githubusercontent.com",
     "terraform.io",
     "hashicorp.com",
+    # Google Workspace, the gallery vendor tenants/azure/corp/entra-enterprise-apps onboards
+    "google.com",
+    # SAML claim-type namespace (schemas.xmlsoap.org), the nameidentifier URI in modules/entra/saml-enterprise-app
+    "xmlsoap.org",
 )
 ALLOWED_DOMAINS: tuple[str, ...] = PLACEHOLDER_DOMAINS + VENDOR_DOMAINS
 

@@ -5,7 +5,8 @@ modules, deployable stacks, values-only tenant cells, and a release train that
 promotes a change from the first tenant to the gated one through a human approval.
 Four providers, one layout: Okta authentication policy and an application catalog
 (SAML and OIDC apps behind app sign-on policies), Entra ID (app registrations,
-Conditional Access, PIM for groups and directory roles, and federation to AWS),
+a SAML application catalog, Conditional Access, PIM for groups and directory
+roles, and federation to AWS),
 Azure resource RBAC (custom roles, PIM policies, eligibilities), and AWS IAM
 Identity Center (permission sets and group assignments, in commercial and GovCloud).
 Alongside the resources, the identity hygiene and governance that cannot be a
@@ -90,6 +91,7 @@ decision records carry the reasoning that the commits do not.
 | PIM role management policies per (scope, role): activation window, MFA, approval, expiration | `modules/azure/pim-role-policy` | `azurerm_role_management_policy` |
 | PIM eligible assignments for Entra groups, by group, role, and scope name | `modules/azure/pim-eligible-assignment` | `azurerm_pim_eligible_role_assignment` |
 | AWS IAM Identity Center gallery app: SAML, signing certificate, group assignments, SCIM provisioning | `modules/entra/aws-identity-center-app` | `azuread_application`, `azuread_service_principal`, `azuread_service_principal_token_signing_certificate`, `azuread_app_role_assignment`, `azuread_synchronization_secret`, `azuread_synchronization_job` |
+| SAML enterprise applications, gallery or custom, as a map: service principal in SAML mode with assignment required, an Entra-generated signing certificate with expiry mail, a claims mapping policy rendered from typed NameID and claim values, app roles to groups by name, optional SCIM provisioning, the tenant's SAML endpoints and each app's metadata URL as outputs | `modules/entra/saml-enterprise-app` | `azuread_application`, `azuread_service_principal`, `azuread_service_principal_token_signing_certificate`, `azuread_claims_mapping_policy`, `azuread_service_principal_claims_mapping_policy_assignment`, `azuread_app_role_assignment`, `azuread_synchronization_secret`, `azuread_synchronization_job` |
 | Identity Center permission sets with partition-aware managed policies, inline policy, and boundary | `modules/aws/permission-set` | `aws_ssoadmin_permission_set`, `aws_ssoadmin_managed_policy_attachment`, `aws_ssoadmin_customer_managed_policy_attachment`, `aws_ssoadmin_permission_set_inline_policy`, `aws_ssoadmin_permissions_boundary_attachment` |
 | Identity Center account assignments parsed from `AWS-<PARTITION>-<accountId>-<PermissionSetName>` group names | `modules/aws/account-assignment` | `aws_ssoadmin_account_assignment` |
 | IAM service roles: trust from an allowlisted service, 12-digit accounts, or one GitHub repository by branch and environment; policies by name; boundary; instance profile for EC2 | `modules/aws/iam-service-role` | `aws_iam_role`, `aws_iam_role_policy_attachment`, `aws_iam_role_policy`, `aws_iam_instance_profile` |
@@ -114,7 +116,7 @@ decision records carry the reasoning that the commits do not.
 | PIM activation settings of undeclared Azure pairs and Entra directory roles, group eligibility end dates, restricted-offer subscriptions, the runbooks' own source and job health | `automation/runbooks/*` on `automation/lib/Runbook.Common.ps1` | none: Graph, ARM, and Storage calls from Automation jobs, delivered by `stacks/azure-automation` |
 | Entra authentication methods policy (per-method state, targets, and settings; registration campaign; report suspicious activity; system-preferred MFA), groups by display name | `policies/entra/authentication-methods` with `scripts/Set-AuthenticationMethods.ps1` and `automation/runbooks/Invoke-AuthenticationMethodsDrift.ps1` | none: Graph `PATCH` on patch-only singletons; delivered as `azurerm_automation_variable_string` and a pipeline job |
 
-Ten platform stacks compose those modules into deployable units, with a cell in
+Eleven platform stacks compose those modules into deployable units, with a cell in
 every tenant or partition of their family:
 
 | Stack | Composes | Cells |
@@ -122,6 +124,7 @@ every tenant or partition of their family:
 | `stacks/okta-config` | the four Okta policy modules | `tenants/okta/dev/okta-config`, `tenants/okta/prod/okta-config` |
 | `stacks/okta-applications` | the Okta application catalog: app sign-on policies first, then the SAML and OIDC apps bound to a policy by key, with cross-map checks at plan (the policy key exists, an admin-tier app names a phishing-resistant policy, no label twice) | `tenants/okta/dev/okta-applications`, `tenants/okta/prod/okta-applications`, each after the org's `okta-config` cell, whose zones the rules name |
 | `stacks/entra-app-registrations` | app registrations and service principals with a drift-detection import contract | `tenants/azure/corp/entra-app-registrations` |
+| `stacks/entra-enterprise-apps` | the Entra application catalog over SAML: gallery and custom enterprise applications as values, groups by name, with cross-map checks at plan (no display name, reply URL, or entity id on two apps; a provisioning token only for an app that provisions) | `tenants/azure/corp/entra-enterprise-apps` |
 | `stacks/entra-conditional-access` | named locations, authentication strengths, and Conditional Access policies | `tenants/azure/{corp,subsidiary}/entra-conditional-access` |
 | `stacks/entra-pim-governance` | role-assignable groups, PIM for groups policies, and Entra role eligibilities | `tenants/azure/{corp,subsidiary}/entra-pim-governance` |
 | `stacks/azure-rbac-roles` | custom role definitions only | `tenants/azure/corp/azure-rbac-roles` |
@@ -130,8 +133,8 @@ every tenant or partition of their family:
 | `stacks/aws-identity-center` | permission sets, then account assignments, one assignment per group name | `tenants/aws/{commercial,govcloud}/aws-identity-center` |
 | `stacks/azure-automation` | Automation account and one identity per privilege tier, then the runbooks in `automation/runbooks` (with `automation/lib` inlined), the desired-state files in `policies/` as variables, each tier's Graph permissions and Azure role assignments, and optional backup storage | `tenants/azure/corp/azure-automation` |
 
-The subsidiary tenant has no `entra-app-registrations` cell because application
-onboarding is confined to corp, no `azure-rbac-roles` cell because it assigns built-in
+The subsidiary tenant has no `entra-app-registrations` or `entra-enterprise-apps`
+cell because application onboarding is confined to corp, no `azure-rbac-roles` cell because it assigns built-in
 roles only, no `entra-aws-federation` cell because corp is the identity source
 for every Identity Center instance, and no `azure-automation` cell because the
 runbooks have not been rolled out to it; when they are, the cell is a copy of
@@ -161,7 +164,7 @@ for each cloud, and two app stacks for each.
 identity-as-code/
   modules/
     okta/                       network-zone, session-policy, mfa-policy, password-policy, app-signon-policy, app-saml, app-oauth
-    entra/                      app registration, Conditional Access, PIM for groups, AWS Identity Center app, and Graph app role grant building blocks
+    entra/                      app registration, SAML enterprise app, Conditional Access, PIM for groups, AWS Identity Center app, and Graph app role grant building blocks
     azure/                      rbac-role-definition, pim-role-policy, pim-eligible-assignment, automation-account, automation-runbooks, workload-role-assignment, backup-storage,
                                 resource-group, managed-identity, key-vault, container-registry, storage-account, subscription-baseline
     aws/                        permission-set, account-assignment, iam-service-role, kms-key, s3-bucket, account-hardening, cloudtrail,
@@ -170,6 +173,7 @@ identity-as-code/
     okta-config/
     okta-applications/          the Okta catalog: app sign-on policies, SAML and OIDC apps as values (docs/adr/0020)
     entra-app-registrations/
+    entra-enterprise-apps/      the Entra catalog: SAML enterprise applications, gallery or custom, as values (docs/adr/0021)
     entra-conditional-access/
     entra-pim-governance/
     entra-aws-federation/
@@ -219,6 +223,9 @@ identity-as-code/
         azure-pim-governance/terragrunt.hcl
         azure-automation/terragrunt.hcl
         entra-app-registrations/terragrunt.hcl
+        entra-enterprise-apps/
+          terragrunt.hcl        the root include, the one labeled fragment include, the source; no cell-wide values (docs/adr/0021)
+          saml-apps.hcl         fragment: the saml_apps map, a gallery app and a custom app, values only
         entra-aws-federation/terragrunt.hcl
         entra-conditional-access/terragrunt.hcl
         entra-pim-governance/terragrunt.hcl
@@ -338,7 +345,7 @@ cell says only which region it is. State bucket and OIDC role are per partition
 and arrive through the environment. See
 [ADR 0009](docs/adr/0009-partition-aware-aws-cells.md).
 
-**Three kinds of stack, and addressing lives in locator files.** The ten
+**Three kinds of stack, and addressing lives in locator files.** The eleven
 stacks above are platform stacks: every tenant of a family has a cell for
 each, and the tenant's values are the only difference. The next requests were
 not tenant-wide: one account needs a role a CI runner can assume, one
@@ -396,6 +403,32 @@ entity id, SSO URL, metadata URL, and signing certificate a vendor
 configures, and `oauth_client_ids` the client id a developer configures,
 none of which is secret. See
 [ADR 0020](docs/adr/0020-applications-are-catalog-shapes-with-guardrails.md).
+
+**The Entra side has the same catalog, and the same vendor is onboarded
+from either identity provider with the same values.**
+`stacks/entra-enterprise-apps` is one values-only fragment of SAML service
+providers, gallery or custom, and `modules/entra/saml-enterprise-app`
+carries the shape: a cell says the entity id, the ACS and sign-on URLs, how
+the subject is named, the claims as typed name and source pairs, who is
+mailed before the signing certificate expires, and which groups open the
+app through which app role. The module fixes what a cell cannot say:
+assignment required, SAML as the sign-on mode, a signing key Entra
+generates, the claims mapping policy rendered from the typed values so no
+cell holds a JSON document, https endpoints with a host and no wildcard,
+and a groups claim limited to the groups assigned to the application.
+`tenants/azure/corp/entra-enterprise-apps/saml-apps.hcl` onboards the same
+fictional payroll vendor as `tenants/okta/prod/okta-applications/saml-apps.hcl`,
+with the same entity id, ACS URL, subject, and group names, so the vendor is
+configured once and trusts either side (the attributes are each provider's
+rendering of the vendor's guide: Okta sends `name` from `displayName`, Entra
+sends `firstName` and `lastName`); and beside it a gallery
+application (Google Workspace) shows the other kind, whose app roles are
+the template's and whose provisioning connector is authorised by a console
+consent Terraform cannot perform, stated rather than faked. After apply,
+`vendor_onboarding` holds the issuer, the login and logout URLs, the
+metadata URL, and the certificate thumbprint, all built from the provider's
+tenant id and never typed. See
+[ADR 0021](docs/adr/0021-entra-enterprise-applications-as-a-catalog-shape.md).
 
 **The container pair is the worked example of parity.** `apps/aws/orders-api`
 and `apps/azure/orders-api` give one application everything a container
@@ -778,6 +811,14 @@ zero-change gate applied to an object Terraform cannot hold.
   the apps' own provisioning of users and groups into the vendor. The
   applications stack creates SAML and OIDC apps and the policies in front of
   them, and stops there.
+- On the Entra side: OIDC enterprise applications beyond app registrations
+  (`modules/entra/app-registration` covers those), password-based single
+  sign-on, linked applications, and the provisioning connectors' OAuth
+  authorisations. The enterprise applications stack creates SAML
+  applications, gallery or custom, with their certificates, claims, group
+  assignments, and token-based provisioning, and stops there; a connector
+  such as Google Workspace's is authorised once in the console, and the
+  stack README shows the step.
 - Standing (active) Azure role assignments for people. If a person needs
   standing access, that is a design conversation, not a map entry. The only
   standing grantees are the runbook tier identities, which cannot activate
@@ -888,6 +929,50 @@ synchronization template the gallery application publishes is `aws` (the module
 README says how to list it), and that the provider leaves the template's SAML
 settings alone when `identifier_uris` and `reply_urls` are set.
 
+The Entra application catalog (`modules/entra/saml-enterprise-app`,
+`stacks/entra-enterprise-apps`, and the corp `entra-enterprise-apps` cell)
+was written with Terraform 1.16 available: the module and the stack pass
+`terraform init -backend=false` and `terraform validate` against the pinned
+provider (azuread 3.9.0, recorded in the committed `.terraform.lock.hcl`
+files), and every attribute and block was checked against that version's
+schema. The refusals were proven with `terraform test` and a mocked azuread
+provider, one run per case: 32 runs on the module (a gallery app planned,
+asserting the `CN=` prefix on the certificate name, SAML mode, the gallery
+tag, a NameID-only claims schema, and the tenant endpoints; a custom app
+planned with provisioning, asserting two derived app roles, the groups
+claim, the rendered claims schema, two assignments, and the job; the custom
+app applied end to end; a gallery app applied against a mock that publishes
+no `User` role, failing on the precondition with the published roles
+listed; and 28 refusals each confirmed to fail on its own message) and 6 on
+the stack (the composition of both worked examples with a mock that
+publishes the gallery role, then a display name repeated with different
+case, a reply URL and an entity id shared by two apps, and a provisioning
+token for an app that does not provision and for an app that does not
+exist). The cell was rendered offline with `terragrunt render-json` to
+confirm the state key and the three merged input keys. Those harnesses are
+not committed. One thing the stack harness found rather than confirmed: a
+token merged into the module's map could not drive the synchronization
+secret's `for_each`, because a token that arrives through the stack's
+sensitive variable marks whatever map carries it, so a token-based connector
+could not plan through the stack. The token is now its own sensitive input
+on the module and on the stack (`provisioning_secret_tokens`, keyed by app)
+rather than a field of the map, the secret iterates the apps whose
+`provisioning` sets an endpoint or whose key has a token, and eight further
+runs (seven on the module, one on the stack) prove it: a token through the
+module's sensitive map plans, and applies, one secret with both credentials
+and one job; a token alone, an endpoint alone, and a template alone each
+write only what they have; the stack plans with the token; and a token for
+an app without provisioning, or for an app that is not in the map, fails its
+validation on the module as it does on the stack. What only a live tenant can
+confirm: that the gallery template is found under the display name the cell
+gives and publishes a `User` role (checked at apply on the first run of a
+new gallery app, at plan afterwards), that the provider accepts the bare
+host identifier the Google Workspace gallery entry requires as an identifier
+URI, that the second plan of a gallery app shows no diff on its app roles, that the claims mapping policy
+issues the mapped claims with the service principal's own signing key and
+without `acceptMappedClaims`, that the groups claim carries display names,
+and that the group names the cell carries exist before the first plan.
+
 The account and subscription pieces (`modules/aws/iam-service-role`,
 `kms-key`, `s3-bucket`, `account-hardening`, `cloudtrail`, `log-group`,
 `ssm-parameter-namespace`, and `ecr-repository`; `modules/azure/resource-group`,
@@ -989,7 +1074,7 @@ Terraform binary, `repo_lint.py --all` passes over every file (its first run
 found the two `[string[]]` runbook parameters the automation README had
 excepted, now semicolon strings like every other list, with Pester tests for
 the parsers, and the Pester suite still passes under Windows PowerShell 5.1
-with Pester 3.4.0), and `cells.py` finds the 30 cells in six waves. What
+with Pester 3.4.0), and `cells.py` finds the 31 cells in six waves. What
 only a run on GitHub can confirm: the matrix the AWS and Okta release trains
 read from `cells.py`, the `fromJson` indexing of their wave jobs and the skip
 rules between them (the Okta train's `jq` split of the waves was emulated in

@@ -2,6 +2,8 @@
 #
 #   push to main
 #     |-- plan-corp-roles ---> apply-corp-roles ---> plan-corp-pim ---> apply-corp-pim
+#     |                              |                                       |
+#     |                              +---> plan/apply corp-enterprise-apps   |
 #     |                                                                      |
 #     |                                          plan-corp-automation ---> apply-corp-automation
 #     |                                          apply-corp-auth-methods ----+
@@ -31,6 +33,13 @@
 # role and its first use in the same change plans red in the consuming cell
 # until this train has applied the roles cell, which is why role definitions
 # land in their own pull request first (README.md, "Verification status").
+# The enterprise applications cell (stacks/entra-enterprise-apps) runs after
+# apply-corp-roles beside the governance chain rather than inside it: it
+# resolves its app role groups by name at plan time, and those groups are
+# created in the entra-app-registrations cell or provisioned outside this
+# repository, not by any cell this train applies, so nothing in the train
+# has to precede it and a missing group plans red, which is the honest
+# failure. The gate waits for its apply like any other corp cell.
 # The authentication methods policy is not a Terraform
 # cell at all (docs/adr/0012): apply-corp-auth-methods runs the desired-state
 # script after apply-corp-pim, because the policy names groups that cell
@@ -207,6 +216,96 @@ jobs:
           set -euo pipefail
           terragrunt init -input=false
           terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/corp-azure-rbac-roles.tfplan"
+
+  # ---------------------------------------------------------------------------
+  plan-corp-enterprise-apps:
+    name: plan corp/entra-enterprise-apps
+    # After the roles cell, beside the governance chain: the SAML enterprise
+    # applications resolve their app role groups by name at plan time, and
+    # those groups come from the entra-app-registrations cell or from outside
+    # this repository, never from a cell on this train, so the only ordering
+    # this cell needs is corp's first apply having happened.
+    needs: [apply-corp-roles]
+    runs-on: ubuntu-latest
+    environment: corp-plan
+    concurrency:
+      group: azure-cell-corp-entra-enterprise-apps
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - name: terragrunt plan
+        working-directory: tenants/azure/corp/entra-enterprise-apps
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_DIR"
+          terragrunt init -input=false
+          terragrunt plan -input=false -lock-timeout=5m -out="$PLAN_DIR/corp-entra-enterprise-apps.tfplan"
+          terragrunt show -no-color "$PLAN_DIR/corp-entra-enterprise-apps.tfplan" > "$PLAN_DIR/corp-entra-enterprise-apps.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: azure-plan-corp-entra-enterprise-apps-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}/corp-entra-enterprise-apps.*
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  apply-corp-enterprise-apps:
+    name: apply corp/entra-enterprise-apps
+    needs: [plan-corp-enterprise-apps]
+    runs-on: ubuntu-latest
+    environment: corp
+    concurrency:
+      group: azure-cell-corp-entra-enterprise-apps
+      cancel-in-progress: false
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZ_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZ_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZ_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Terragrunt
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/v${TG_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.AZ_TENANT_ID }}
+          subscription-id: ${{ vars.AZ_SUBSCRIPTION_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: azure-plan-corp-entra-enterprise-apps-${{ github.sha }}
+          path: ${{ env.PLAN_DIR }}
+      - name: terragrunt apply (saved plan)
+        working-directory: tenants/azure/corp/entra-enterprise-apps
+        run: |
+          set -euo pipefail
+          terragrunt init -input=false
+          terragrunt apply -input=false -lock-timeout=5m "$PLAN_DIR/corp-entra-enterprise-apps.tfplan"
 
   # ---------------------------------------------------------------------------
   plan-corp-pim:
@@ -1019,7 +1118,7 @@ jobs:
   # ---------------------------------------------------------------------------
   subsidiary-gate:
     name: gate (subsidiary)
-    needs: [apply-corp-pim, apply-corp-automation, apply-corp-auth-methods, apply-corp-sub-example-prod-workloads, apply-corp-sub-example-prod-data-pipeline, apply-corp-sub-example-prod-orders-api, apply-corp-sub-example-dev-orders-api, plan-subsidiary-pim]
+    needs: [apply-corp-pim, apply-corp-enterprise-apps, apply-corp-automation, apply-corp-auth-methods, apply-corp-sub-example-prod-workloads, apply-corp-sub-example-prod-data-pipeline, apply-corp-sub-example-prod-orders-api, apply-corp-sub-example-dev-orders-api, plan-subsidiary-pim]
     runs-on: ubuntu-latest
     # The "subsidiary" environment carries required reviewers and a wait timer
     # (Settings -> Environments -> subsidiary -> Deployment protection rules).

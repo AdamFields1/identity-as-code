@@ -5,6 +5,10 @@ application and its service principal, the SAML endpoints, a signing certificate
 the group assignments that put people in scope, and SCIM provisioning to the
 Identity Center instance. One module instance per Identity Center instance; the
 `entra-aws-federation` stack calls it once per target.
+The general form of this pattern, a map of SAML service providers, gallery or
+custom, with claims, groups, and optional provisioning, is
+`modules/entra/saml-enterprise-app`; this module keeps only what Identity
+Center adds to it, the group naming convention and the partition check.
 
 ## The naming convention
 

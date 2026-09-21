@@ -294,6 +294,29 @@ def test_builtin_id_allowlist_is_well_formed() -> None:
     assert "8e3af657-a8ff-443c-a75c-2fe8c4bcb635" in ids
 
 
+def test_placeholders_allow_saml_enterprise_app_hosts_and_template_id(good_copy: Path) -> None:
+    # What tenants/azure/corp/entra-enterprise-apps and modules/entra/saml-enterprise-app
+    # put in the tree: Google Workspace's reply and sign-on hosts, the SAML claim-type
+    # namespace behind the nameidentifier URI, and Microsoft's non-gallery application
+    # template id, which the module defaults to for a custom SAML app.
+    assert "google.com" in repo_lint.VENDOR_DOMAINS
+    assert "xmlsoap.org" in repo_lint.VENDOR_DOMAINS
+    assert "8adf8e6e-67b2-4cf2-a259-e3dc5476c621" in repo_lint.load_builtin_ids()
+    (good_copy / "docs" / "saml-app.md").write_text(
+        "\n".join(
+            [
+                "reply https://www.google.com/a/example.com/acs",
+                "sign-on https://www.google.com/a/example.com/ServiceLogin?continue=https://mail.google.com",
+                "name id http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier",
+                "custom_template_id = \"8adf8e6e-67b2-4cf2-a259-e3dc5476c621\"",
+                "",
+            ]
+        ),
+        encoding="ascii",
+    )
+    assert run(good_copy, "placeholders").ok
+
+
 def test_builtin_id_allowlist_rejects_malformed_lines(tmp_path: Path) -> None:
     bad = tmp_path / "ids.txt"
     bad.write_text("# comment\nnot-a-guid  Something\n", encoding="ascii")

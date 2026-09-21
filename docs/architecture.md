@@ -21,6 +21,7 @@ flowchart LR
       EPP[pim-role-policy]
       EPE[pim-eligibility]
       EAI[aws-identity-center-app]
+      ESA[saml-enterprise-app]
       EGG[graph-app-role-grant]
     end
     subgraph mazure["modules/azure"]
@@ -56,6 +57,7 @@ flowchart LR
     SO[okta-config]
     SOK[okta-applications]
     SEA[entra-app-registrations]
+    SEE[entra-enterprise-apps]
     SEC[entra-conditional-access]
     SEP[entra-pim-governance]
     SEF[entra-aws-federation]
@@ -147,6 +149,7 @@ flowchart LR
   EPP --> SEP
   EPE --> SEP
   EAI --> SEF
+  ESA --> SEE
   ARD --> SAR
   APP --> SAP
   APE --> SAP
@@ -214,6 +217,7 @@ flowchart LR
   DEV -.->|dependencies block: zones named by the policy rules| DEVA
   PROD -.->|dependencies block: zones named by the policy rules| PRODA
   SEA --> CORP
+  SEE --> CORP
   SEC --> CORP
   SEP --> CORP
   SEF --> CORP
@@ -289,18 +293,23 @@ Dependencies only point one way. Modules know nothing about stacks. Stacks know
 nothing about tenants. Tenants know nothing about pipelines. A change at any layer
 is reviewed in the layer where it happens.
 
-Four things are deliberately absent from the diagram. `azure-rbac-roles` has no
+Five things are deliberately absent from the diagram. `azure-rbac-roles` has no
 edge to `azure-pim-governance` or `azure-automation`: both refer to custom roles
 by display name and resolve them at plan time, so the coupling is a name, not an
 output (ADR 0005). The one dotted edge between two Okta cells is the same
 kind of coupling made explicit: `okta-applications` names the zones
 `okta-config` creates, reads no output from it, and carries a Terragrunt
 `dependencies` block only so the applications cell plans after the config
-cell has applied (ADR 0020). Nor do the PIM stacks have an edge to the PIM runbooks: the
+cell has applied (ADR 0020). `entra-enterprise-apps` has no edge to
+`entra-app-registrations` for the same reason with no dependency block: the
+groups its app roles name are resolved by display name at plan time, they
+may be created in that cell or provisioned outside the repository, and a
+name that does not exist fails the plan with the name in the error (ADR
+0021). Nor do the PIM stacks have an edge to the PIM runbooks: the
 baseline files under `policies/` mirror their declared entries, and a pull
 request that changes one changes the other (ADR 0015). `subsidiary/*` has no `azure-rbac-roles`,
-`entra-app-registrations`, `entra-aws-federation`, or `azure-automation` cell,
-because the subsidiary assigns built-in roles only, registers no applications,
+`entra-app-registrations`, `entra-enterprise-apps`, `entra-aws-federation`, or `azure-automation` cell,
+because the subsidiary assigns built-in roles only, registers and onboards no applications,
 reaches AWS through corp groups, and has not had the runbooks rolled out. And
 `entra-aws-federation` has no edge to `aws-identity-center`
 even though one feeds the other: the coupling is the group name
@@ -427,6 +436,48 @@ org's `okta-config` cell creates, groups are the names the upstream identity
 provider provisions, and a name that does not exist fails the plan with the
 name in the error. The client secret is never in the graph: `omit_secret` is
 fixed true, so the provider does not read it back (ADR 0020).
+
+## Inside the Entra applications stack
+
+```mermaid
+flowchart TB
+  subgraph eapps["stacks/entra-enterprise-apps (one cell, corp only)"]
+    TPL["data azuread_application_template\n(gallery by display name, custom by its published id)"]
+    GRP["data azuread_group (by display name, once per distinct name)"]
+    CFG["data azuread_client_config (the tenant id)"]
+    APP["module saml_apps\nazuread_application (gallery or custom, ignore_changes static per kind)\nazuread_service_principal (saml, assignment required)\nazuread_service_principal_token_signing_certificate"]
+    CMP["azuread_claims_mapping_policy (rendered from name_id and claims with jsonencode)\nazuread_service_principal_claims_mapping_policy_assignment"]
+    ASG["azuread_app_role_assignment (one per app, role, and group)"]
+    SYN["azuread_synchronization_secret and job (only when provisioning is set)"]
+    TPL -->|template id| APP
+    CFG -->|tenant id| APP
+    APP -->|service principal id| CMP
+    APP -->|service principal id and the template's app roles, or the roles a custom app declares| ASG
+    GRP -->|group object IDs| ASG
+    APP -->|service principal id| SYN
+  end
+
+  APP -->|vendor_onboarding output, the issuer, login and logout URLs, and metadata URL built from the tenant id CFG supplies, the certificate thumbprint, and the NameID format| VENDOR["the vendor's side"]
+  ENV["TF_VAR_provisioning_secret_tokens (a GitHub environment secret, never a cell, never in the map)"] -.->|token by app key| SYN
+```
+
+The template is resolved at plan: a gallery entry by the display name the
+cell gives, the non-gallery template by the id Microsoft publishes for it,
+held in the module and never in a cell. Groups are names looked up once per
+distinct name across every app, and a name that does not exist fails the
+plan with the name in the error. The app role an assignment lands on is the
+template's for a gallery app, read from the instantiated service principal
+and checked by a precondition (at apply on the first run of a new app,
+because the roles are computed until it exists, and at plan on every later
+run), and the module's own for a custom app, declared from the keys of
+`app_roles_to_groups` with derived ids and checked as a validation. The
+claims mapping policy is one document per app rendered from typed values, so
+the JSON exists only in the plan. Provisioning is optional and two-shaped:
+a token-based connector states its template and endpoint in the cell and
+takes the token from the environment; a connector authorised by an OAuth
+consent (Google Workspace) is left unset, because Terraform cannot consent.
+Everything the vendor asks for is an output built from the provider's tenant
+id, and none of it is secret (ADR 0021).
 
 ## Inside the Azure stacks
 
@@ -731,6 +782,7 @@ key = "azure/${path_relative_to_include()}/terraform.tfstate"
 | `tenants/azure/corp/azure-pim-governance` | `azure/corp/azure-pim-governance/terraform.tfstate` |
 | `tenants/azure/corp/azure-automation` | `azure/corp/azure-automation/terraform.tfstate` |
 | `tenants/azure/corp/entra-conditional-access` | `azure/corp/entra-conditional-access/terraform.tfstate` |
+| `tenants/azure/corp/entra-enterprise-apps` | `azure/corp/entra-enterprise-apps/terraform.tfstate` |
 | `tenants/azure/subsidiary/azure-pim-governance` | `azure/subsidiary/azure-pim-governance/terraform.tfstate` |
 | `tenants/azure/corp/subscriptions/sub-example-prod/azure-subscription-baseline` | `azure/corp/subscriptions/sub-example-prod/azure-subscription-baseline/terraform.tfstate` |
 | `tenants/azure/corp/subscriptions/sub-example-prod/apps/data-pipeline` | `azure/corp/subscriptions/sub-example-prod/apps/data-pipeline/terraform.tfstate` |
@@ -740,6 +792,8 @@ key = "azure/${path_relative_to_include()}/terraform.tfstate"
 
 The `subscription.hcl` locator beside a subscription cell plays no part in
 the key: the key is the path, and the locator only addresses the provider.
+Nor does the `saml-apps.hcl` fragment beside the enterprise applications
+cell: only `terragrunt.hcl` marks a cell, and a fragment has no state.
 
 Resource group, storage account, and container are `TG_AZ_STATE_RG`,
 `TG_AZ_STATE_SA`, and `TG_AZ_STATE_CONTAINER`. The backend authenticates with the
