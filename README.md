@@ -3,13 +3,13 @@
 Identity configuration managed the same way as infrastructure: typed Terraform
 modules, deployable stacks, values-only tenant cells, and a release train that
 promotes a change from the first tenant to the gated one through a human approval.
-Four providers, one layout: Okta authentication policy, an application catalog
-(SAML and OIDC apps behind app sign-on policies), and federation to Entra as
-the upstream identity provider for workforce sign-in, Entra ID (app registrations,
-a SAML application catalog, Conditional Access, PIM for groups and directory
-roles, and federation to AWS),
-Azure resource RBAC (custom roles, PIM policies, eligibilities), and AWS IAM
-Identity Center (permission sets and group assignments, in commercial and GovCloud).
+Four providers, one layout: Okta (authentication policy, an application
+catalog of SAML and OIDC apps behind app sign-on policies, and federation to
+Entra as the upstream identity provider for workforce sign-in), Entra ID (app
+registrations, a SAML application catalog, Conditional Access, PIM for groups
+and directory roles, and federation to AWS), Azure resource RBAC (custom
+roles, PIM policies, eligibilities), and AWS IAM Identity Center (permission
+sets and group assignments, in commercial and GovCloud).
 Alongside the resources, the identity hygiene and governance that cannot be a
 resource because it depends on live data (credential expiry, guest dormancy,
 eligibilities about to lapse, subscriptions nobody authorised, PIM settings
