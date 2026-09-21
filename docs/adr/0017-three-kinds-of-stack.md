@@ -215,6 +215,28 @@ the same inputs, state key, dependencies, and generated files before and
 after (Terragrunt `render-json`, offline), the example-prod cell less the
 two entries that moved.
 
+Amended 2026-09-20: a public certificate may sit beside a cell. The
+federation cells (`tenants/okta/<org>/okta-federation/`, cells of the
+twelfth platform stack, `stacks/okta-federation`, ADR 0022) carry the
+upstream identity provider's signing certificate as a `.cer` file beside
+`terragrunt.hcl` (`entra-signing-<year>.cer`), and the fragment that
+declares the identity provider passes it with
+`file("${get_terragrunt_dir()}/entra-signing-<year>.cer")`, so the value
+is read from beside the cell and never pasted into an `.hcl` file. That is
+the only non-`.hcl` file a cell directory holds and the only function call
+an input may carry: a `.cer` beside the cell, referenced by `file()` with
+`get_terragrunt_dir()`, and nothing else. The file is the public half of a
+key the other side generated and keeps, so it is a value like a URL the
+other side publishes, not a secret, and the cell rule is unchanged in
+substance: no resource, no data source, no conditional, no module call, no
+id, and nothing computed. It is not a fragment (it has no `inputs` and no
+include names it), it plays no part in the state key (only `terragrunt.hcl`
+marks a cell), and the `idp-saml` module reads only the text between the
+`BEGIN` and `END` lines, so the file may say above them where it came from
+and what replaces it. A cell that needs any other file, or any other
+function, has found a shape the catalog does not offer, and the answer is a
+module or a stack input, never a second exception.
+
 `tenants/aws/root.hcl` finds the two AWS locators by walking up from the
 cell with `find_in_parent_folders`, reads them with `read_terragrunt_config`,
 and generates the provider with `allowed_account_ids = ["<account_id>"]`

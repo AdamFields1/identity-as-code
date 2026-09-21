@@ -1,0 +1,38 @@
+# Placeholder certificate for a documentation tenant. Not the real one.
+#
+# This is a self-signed certificate generated with openssl (rsa:2048, ten
+# years, CN=placeholder-entra-signing.example.com) whose private key was
+# written to the null device and never existed on disk: it is public key
+# material that signs nothing and is trusted by nothing. It stands in for
+# the file a real cell carries so the fragment beside it can read it with
+# file() and the stack can be planned offline.
+#
+# The real file is the enterprise application's SAML signing certificate,
+# downloaded in Base64 form from the Entra portal (the okta-workforce
+# application in the corp entra-enterprise-apps cell, Single sign-on, SAML
+# Certificates, Certificate (Base64)), or the value output of that cell's
+# signing certificate resource. Replace this whole file with that download;
+# openssl and the idp-saml module both read only the text between the BEGIN
+# and END CERTIFICATE lines, so these comment lines are ignored either way.
+-----BEGIN CERTIFICATE-----
+MIIDuzCCAqOgAwIBAgIUMsWb144TeLZDnvujji/+qAMnU2YwDQYJKoZIhvcNAQEL
+BQAwbTEuMCwGA1UEAwwlcGxhY2Vob2xkZXItZW50cmEtc2lnbmluZy5leGFtcGxl
+LmNvbTE7MDkGA1UECgwyUGxhY2Vob2xkZXIgY2VydGlmaWNhdGUgZm9yIGEgZG9j
+dW1lbnRhdGlvbiB0ZW5hbnQwHhcNMjYwOTIxMDEwMDU5WhcNMzYwOTE4MDEwMDU5
+WjBtMS4wLAYDVQQDDCVwbGFjZWhvbGRlci1lbnRyYS1zaWduaW5nLmV4YW1wbGUu
+Y29tMTswOQYDVQQKDDJQbGFjZWhvbGRlciBjZXJ0aWZpY2F0ZSBmb3IgYSBkb2N1
+bWVudGF0aW9uIHRlbmFudDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
+AMCs5NDuahixJyEb1hFwwzsvMotfEDPkxy5TCKNieiybg4BRKN1VjaSLBQSbk5NP
+M9kQDw4arCIDykrEpVjL4ysUo3BkByz/+XnqF4GQ6phqOQZsfK58ztTPmqoU5QXm
+bi/Qo/dnGV02pJQ00OmK1Vc91aUMSPmEpJdkVe+zagqvnCTFFMS1bam5ZBgndxk2
+gXPZS0dCkRvMLkFSr9zdVsneVxq8KPJ+wTUCRyfal6F0ZP5IDlgBCc2ePCC8YkAk
+GmonD38HjsdXfhjCjbOiyjMNEmUrJMgHzAnulaDl4fQqBOIovlQJnraviq7n5f3s
+rT9Yy9rspBSZI4D7CHJrAnECAwEAAaNTMFEwHQYDVR0OBBYEFA74L5GI0hOse87J
+qgOVcKEBNiKdMB8GA1UdIwQYMBaAFA74L5GI0hOse87JqgOVcKEBNiKdMA8GA1Ud
+EwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAAeqQ+yRCawYYncC8hEaRHij
+yqHK0+5E4cH//FQC2H3rUWK4r5mocvIzfJR6so2zaQjtpxQXUizfF4MmPd/zCvRi
+iaHdYg/sddgw0YLvgiguEmAfQWgdLsirIhVDYOLrMfc0A+VvQtlQkHjVWHGtOfr7
+J9xfRHlJ6oF59ygsLWISBAXv6RwjkI9FEPLEKgbB0W1LZs/6ztw520RlAaGLVXWw
+eV21wiEaf/WJyB6d1KeA1lZYsib+RkBiRz/ibzH0+PcHCXybPbDEXTGVoRIethV4
+NtfiIslibswhIez/ty4ozOpRGyJ0OqDqVBAJ24YiU7UapvMlovCoqIiz8nY9JQM=
+-----END CERTIFICATE-----

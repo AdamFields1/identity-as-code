@@ -74,5 +74,38 @@ inputs = {
         Admin = ["app-payroll-admins"]
       }
     }
+
+    # The Okta org, as a custom application: the other side of the trust the
+    # okta-federation cells build (tenants/okta/<env>/okta-federation/). Here
+    # this tenant is the identity provider and Okta is the service provider,
+    # so the entity ID and the ACS URL are Okta's: the audience suffix
+    # (spexampleplaceholder) and the identity provider id (0oa...) are
+    # minted by Okta and appear only in the identity_provider_onboarding
+    # output after the first Okta apply. The values below are the
+    # provisional ones the stack README's "Bootstrapping the trust in two
+    # applies" describes; the second Entra apply replaces them with the
+    # output's audience and acs_url. The three values that cross the other
+    # way (this tenant's issuer and sign-on URL, and this application's
+    # signing certificate, downloaded in Base64 form) are what the Okta cell
+    # carries. The subject is the mail address in the emailAddress format,
+    # which the Okta side matches on email, and no other claim is needed:
+    # Okta reads the NameID and nothing else. Everyone in the workforce group
+    # is assigned through the User role; provisioning stays unset, because
+    # the directory of record provisions Okta and the Okta cell keeps
+    # just-in-time creation off.
+    okta-workforce = {
+      display_name                 = "Okta (workforce federation)"
+      identifier_uris              = ["https://www.okta.com/saml2/service-provider/spexampleplaceholder"]
+      reply_urls                   = ["https://example-org.okta.com/sso/saml2/0oa00000000000000000"]
+      sign_on_url                  = "https://example-org.okta.com"
+      notification_email_addresses = ["iam-alerts@example.com"]
+
+      signing_certificate = { display_name = "Okta federation signing" }
+      name_id             = { source = "mail", format = "emailAddress" }
+
+      app_roles_to_groups = {
+        User = ["all-workforce"]
+      }
+    }
   }
 }

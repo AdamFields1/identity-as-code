@@ -1,7 +1,9 @@
 # PR validation for the Okta identity-as-code tree (tenants/okta, which holds
 # one org per tenant directory and, under each, one cell per stack: the
-# okta-config cell of policies and zones and the okta-applications cell of
-# sign-on policies, SAML apps, and OIDC apps; docs/adr/0017).
+# okta-config cell of policies and zones, the okta-applications cell of
+# sign-on policies, SAML apps, and OIDC apps, and the okta-federation cell
+# of upstream identity providers and routing rules, the last two in the
+# wave after okta-config; docs/adr/0017).
 #
 # Static checks run on every PR that touches Terraform or Terragrunt under the
 # Okta paths. A speculative plan runs only for cells affected by the change,

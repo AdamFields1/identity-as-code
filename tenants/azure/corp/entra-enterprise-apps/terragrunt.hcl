@@ -19,9 +19,14 @@
 # what the catalog does not offer. A fragment is not a cell: it has no include
 # of its own, no source, and Terragrunt never runs it.
 #
-# What this cell holds: two SAML service providers. Google Workspace is a
-# gallery application, created from its template by display name. Example
-# Payroll is a custom application, the same fictional vendor
+# What this cell holds: three SAML service providers. Google Workspace is a
+# gallery application, created from its template by display name. Okta
+# (workforce federation) is the other side of the trust the Okta org's
+# okta-federation cells create: Entra asserts and Okta is the service
+# provider, so its entity ID and reply URL are values the Okta side mints and
+# the stack README of stacks/okta-federation describes the two applies that
+# exchange them. Example Payroll is a custom application, the same fictional
+# vendor
 # tenants/okta/prod/okta-applications/saml-apps.hcl onboards: the same entity
 # ID, ACS URL, subject and group names, so the vendor is configured once and
 # trusts either identity provider; the attributes are each provider's

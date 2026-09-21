@@ -13,6 +13,8 @@ flowchart LR
       ASP[app-signon-policy]
       ASM[app-saml]
       AOA[app-oauth]
+      IDS[idp-saml]
+      IDR[idp-routing-rules]
     end
     subgraph mentra["modules/entra"]
       EAR[app-registration]
@@ -56,6 +58,7 @@ flowchart LR
   subgraph stacks["stacks (units of deployment, names resolved to IDs here)"]
     SO[okta-config]
     SOK[okta-applications]
+    SOF[okta-federation]
     SEA[entra-app-registrations]
     SEE[entra-enterprise-apps]
     SEC[entra-conditional-access]
@@ -102,6 +105,8 @@ flowchart LR
     PROD[prod/okta-config]
     DEVA["dev/okta-applications\n(fragments: signon-policies, saml-apps, oauth-apps)"]
     PRODA["prod/okta-applications\n(the same fragments)"]
+    DEVF["dev/okta-federation\n(fragments: identity-providers, routing-rules,\nplus the signing certificate file read with file())"]
+    PRODF["prod/okta-federation\n(the same fragments and file, the admin console excluded)"]
   end
 
   subgraph tazure["tenants/azure (values only, one cell per stack; one per subscription under subscriptions/)"]
@@ -143,6 +148,8 @@ flowchart LR
   ASP --> SOK
   ASM --> SOK
   AOA --> SOK
+  IDS --> SOF
+  IDR --> SOF
   EAR --> SEA
   ECA --> SEC
   ESG --> SEP
@@ -216,6 +223,10 @@ flowchart LR
   SOK --> PRODA
   DEV -.->|dependencies block: zones named by the policy rules| DEVA
   PROD -.->|dependencies block: zones named by the policy rules| PRODA
+  SOF --> DEVF
+  SOF --> PRODF
+  DEV -.->|dependencies block: zones named by the routing rules| DEVF
+  PROD -.->|dependencies block: zones named by the routing rules| PRODF
   SEA --> CORP
   SEE --> CORP
   SEC --> CORP
@@ -242,6 +253,8 @@ flowchart LR
   RO -.->|include| PROD
   RO -.->|include| DEVA
   RO -.->|include| PRODA
+  RO -.->|include| DEVF
+  RO -.->|include| PRODF
   RA -.->|include| CORP
   RA -.->|include| SUB
   RW -.->|include| COMM
@@ -262,6 +275,10 @@ flowchart LR
   PRODA --> OPR
   DEVA --> OREL
   PRODA --> OREL
+  DEVF --> OPR
+  PRODF --> OPR
+  DEVF --> OREL
+  PRODF --> OREL
   CORP --> APR
   SUB --> APR
   CORP --> AREL
@@ -293,14 +310,20 @@ Dependencies only point one way. Modules know nothing about stacks. Stacks know
 nothing about tenants. Tenants know nothing about pipelines. A change at any layer
 is reviewed in the layer where it happens.
 
-Five things are deliberately absent from the diagram. `azure-rbac-roles` has no
+Six things are deliberately absent from the diagram. `azure-rbac-roles` has no
 edge to `azure-pim-governance` or `azure-automation`: both refer to custom roles
 by display name and resolve them at plan time, so the coupling is a name, not an
-output (ADR 0005). The one dotted edge between two Okta cells is the same
-kind of coupling made explicit: `okta-applications` names the zones
-`okta-config` creates, reads no output from it, and carries a Terragrunt
-`dependencies` block only so the applications cell plans after the config
-cell has applied (ADR 0020). `entra-enterprise-apps` has no edge to
+output (ADR 0005). The dotted edges between Okta cells are the same
+kind of coupling made explicit: `okta-applications` and `okta-federation`
+name the zones `okta-config` creates, read no output from it, and carry a
+Terragrunt `dependencies` block only so they plan after the config cell has
+applied (ADR 0020, ADR 0022). `okta-federation` has no edge to
+`entra-enterprise-apps` even though each org's cell is one side of a trust
+whose other side is the `okta-workforce` application in the corp cell: the
+coupling is three values exchanged across the two trees (the issuer and the
+signing certificate one way, the audience and the ACS URL the other), read
+from an output or a portal download and set as values, never a cross-family
+dependency (ADR 0022). `entra-enterprise-apps` has no edge to
 `entra-app-registrations` for the same reason with no dependency block: the
 groups its app roles name are resolved by display name at plan time, they
 may be created in that cell or provisioned outside the repository, and a
@@ -478,6 +501,46 @@ takes the token from the environment; a connector authorised by an OAuth
 consent (Google Workspace) is left unset, because Terraform cannot consent.
 Everything the vendor asks for is an output built from the provider's tenant
 id, and none of it is secret (ADR 0021).
+
+## Inside the federation stack
+
+```mermaid
+flowchart TB
+  subgraph fed["stacks/okta-federation (one cell per org, after its okta-config cell)"]
+    CER["the signing certificate file beside the cell\n(public key material, read by the fragment with file())"]
+    GN2["data okta_group (by name, once per distinct name)"]
+    ZN2["data okta_network_zone (by name, once per distinct name)"]
+    APN["data okta_app (by label, once per distinct label)"]
+    DP["data okta_policy\n(type IDP_DISCOVERY, the one every org has)"]
+    IDP["module identity_providers\nokta_idp_saml_key (one per certificate entry, x5c from the armor-stripped body)\nokta_idp_saml (signed AuthnRequests, SHA-256, kid of the active entry)"]
+    RR["module routing_rules\nokta_policy_rule_idp_discovery (targets fixed to SAML2, unique priorities)"]
+    CER -->|PEM text, one certificate per entry| IDP
+    GN2 -->|group IDs for the filter, assignment, and link lists| IDP
+    IDP -->|identity provider IDs by key, as idp_ids| RR
+    ZN2 -->|zone IDs, only under ZONE| RR
+    APN -->|app IDs for APP entries| RR
+    DP -->|policy_id| RR
+  end
+
+  ENTRA["the Entra side: okta-workforce in the corp entra-enterprise-apps cell"] -.->|issuer and signing certificate, a portal download or the certificate resource's value| CER
+  IDP -->|identity_provider_onboarding: audience and ACS URL, never a secret| ENTRA
+```
+
+Identity providers are created first because every rule names one by key,
+and the stack resolves the key against the identity provider module's ids,
+which is also the dependency edge. The certificate is the one input that is
+a file rather than a value: the fragment reads it with `file()` from beside
+the cell, the module strips the armor to the base64 body Okta's `x5c` set
+expects and refuses anything that is not exactly one certificate, and the
+private half never exists anywhere in this tree. Groups, zones, and the
+excluded application are names and a label looked up once per distinct
+value, and a name that does not exist fails the plan with the name in the
+error. The discovery policy is Okta's own, one per org, looked up by the
+name Okta gives it and never created. What crosses to the Entra tree is an
+output (the audience Okta computed and the ACS URL built from the org and
+the identity provider id), set there as the application's identifier and
+reply URL on a second apply; nothing in either cell is the other's state
+(ADR 0022).
 
 ## Inside the Azure stacks
 
@@ -755,14 +818,17 @@ key = "okta/${path_relative_to_include()}/terraform.tfstate"
 |----------------|-----------|
 | `tenants/okta/dev/okta-config` | `okta/dev/okta-config/terraform.tfstate` |
 | `tenants/okta/dev/okta-applications` | `okta/dev/okta-applications/terraform.tfstate` |
+| `tenants/okta/dev/okta-federation` | `okta/dev/okta-federation/terraform.tfstate` |
 | `tenants/okta/prod/okta-config` | `okta/prod/okta-config/terraform.tfstate` |
 | `tenants/okta/prod/okta-applications` | `okta/prod/okta-applications/terraform.tfstate` |
+| `tenants/okta/prod/okta-federation` | `okta/prod/okta-federation/terraform.tfstate` |
 | `tenants/okta/sandbox/okta-config` (future) | `okta/sandbox/okta-config/terraform.tfstate` |
 
 The Okta cells moved from `tenants/okta/<tenant>` to `tenants/okta/<tenant>/okta-config`
 before any state was written, so the longer key had no predecessor and nothing
-was migrated. The fragment files beside an `okta-applications` cell's
-`terragrunt.hcl` play no part in the key: only `terragrunt.hcl` marks a cell,
+was migrated. The fragment files beside an `okta-applications` or
+`okta-federation` cell's `terragrunt.hcl`, and the `.cer` file beside the
+federation cell, play no part in the key: only `terragrunt.hcl` marks a cell,
 and a fragment has no state.
 
 Bucket, region, and lock table are environment variables (`TG_STATE_BUCKET`,
@@ -854,19 +920,20 @@ sequenceDiagram
     Rel->>Okta: plan prod gated wave 0 (okta-config, artifact saved, plan_gate report in the step summary)
   end
   Rel->>Okta: apply dev wave 0
-  Rel->>Okta: plan and apply dev wave 1 (okta-applications, after the zones it names exist)
+  Rel->>Okta: plan and apply dev wave 1 (okta-applications and okta-federation, after the zones they name exist)
   Rel->>Gate: soak gate waits
   Gate-->>Rel: human approval after wait timer
   Rel->>Okta: apply prod gated wave 0 from the merge-time plan artifact
   Note over Rel,Okta: stale plan (state moved) is refused, release is re-run
-  Rel->>Okta: plan and apply prod gated wave 1 (okta-applications, under prod-apply)
+  Rel->>Okta: plan and apply prod gated wave 1 (okta-applications and okta-federation, under prod-apply)
 ```
 
 Three properties matter here:
 
 1. The gated wave prod applies is the plan file that was produced when the
    change merged, not a fresh plan taken after approval. What the reviewer
-   approved is what runs. The waves after it (today the applications cell)
+   approved is what runs. The waves after it (today the applications and
+   federation cells, side by side)
    are planned after the gate, because the config cell they depend on has
    just applied and a merge-time plan of them would be stale by construction;
    they apply under `prod-apply` without a second approval, as the AWS train's
@@ -876,9 +943,11 @@ Three properties matter here:
    contested by the pipeline itself.
 3. The cells and their order are not in the workflow. `cells.py` finds them
    under `tenants/okta` and orders them from the `dependencies` block each
-   applications cell carries and the dev-before-prod rule, so a new cell lands
-   in its wave with no workflow edit, and a red cell stops the train at its
-   wave.
+   applications and federation cell carries and the dev-before-prod rule, so
+   a new cell lands in its wave with no workflow edit (the federation cells
+   landed beside the applications cells in wave 1 and gated wave 1 with only
+   the header comments of the two workflows edited), and a red cell stops the
+   train at its wave.
 
 `azure-release` has the same shape with corp in the dev position and subsidiary in
 the prod position, and one extra rule: the corp roles cell is applied before the

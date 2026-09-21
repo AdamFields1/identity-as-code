@@ -15,29 +15,31 @@
 #
 # With the cells this tree holds today the waves are:
 #   wave 0        dev/okta-config
-#   wave 1        dev/okta-applications (after the config cell, whose network
-#                 zones its sign-on policies name)
+#   wave 1        dev/okta-applications and dev/okta-federation (after the
+#                 config cell, whose network zones their sign-on policy
+#                 rules and routing rules name)
 #   gated wave 0  prod/okta-config
-#   gated wave 1  prod/okta-applications
+#   gated wave 1  prod/okta-applications and prod/okta-federation
 #
 # The cells and their order are not written here. The cells job runs
 # tools/repo_lint/cells.py, which finds every cell under tenants/okta by its
 # terragrunt.hcl and orders the cells by the rules this train used to state
 # by hand (docs/adr/0018): a Terragrunt dependencies block, and dev before
-# prod. The applications cell of each org carries dependencies = ["../okta-config"]
-# because its sign-on policy rules name network zones by the names the
-# config cell creates them with, resolved at plan time; nothing else in the
-# family reads another cell's outputs, so the rest of the order is a
-# release rule, and it is stated once, in cells.py, where the pull request
-# workflow and the lint job read the same rule. A new cell needs no edit
-# here: it lands in its wave. What does need an edit is a wave count beyond
-# what this file carries (four for dev, four for prod); the cells job
-# refuses that loudly rather than dropping a cell.
+# prod. The applications cell and the federation cell of each org carry
+# dependencies = ["../okta-config"] because their rules (sign-on policy
+# rules in one, routing rules in the other) name network zones by the
+# names the config cell creates them with, resolved at plan time; nothing
+# else in the family reads another cell's outputs, so the rest of the order
+# is a release rule, and it is stated once, in cells.py, where the pull
+# request workflow and the lint job read the same rule. A new cell needs no
+# edit here: it lands in its wave. What does need an edit is a wave count
+# beyond what this file carries (four for dev, four for prod); the cells
+# job refuses that loudly rather than dropping a cell.
 #
 # Two things changed shape from the per-tenant jobs this replaced. Dev is
 # no longer one plan and one apply: the config cell applies before the
-# applications cell plans, because a zone the config cell has not created
-# yet is a plan-time failure in the applications cell. And a red cell stops
+# applications and federation cells plan, because a zone the config cell
+# has not created yet is a plan-time failure in either. And a red cell stops
 # the train at its wave: a wave's apply job runs only when every plan in the
 # wave succeeded, and the next wave only when the whole wave applied, so a
 # failed plan in dev holds prod at the gate. Both are the price of a train
@@ -48,7 +50,8 @@
 # parallel with dev, and saved; the reviewer approves that exact plan. If
 # prod state moves between merge and approval, Terraform refuses the stale
 # plan and the release must be re-run, which is the safe failure. The rest
-# of prod (today the applications cell) is planned fresh after the gate and
+# of prod (today the applications and federation cells) is planned
+# fresh after the gate and
 # applied without a second approval, under prod-apply, which carries the
 # writer token and a main-only branch policy: the reviewer approved the
 # release, and the config cell it depends on has just applied, so a plan

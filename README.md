@@ -3,8 +3,9 @@
 Identity configuration managed the same way as infrastructure: typed Terraform
 modules, deployable stacks, values-only tenant cells, and a release train that
 promotes a change from the first tenant to the gated one through a human approval.
-Four providers, one layout: Okta authentication policy and an application catalog
-(SAML and OIDC apps behind app sign-on policies), Entra ID (app registrations,
+Four providers, one layout: Okta authentication policy, an application catalog
+(SAML and OIDC apps behind app sign-on policies), and federation to Entra as
+the upstream identity provider for workforce sign-in, Entra ID (app registrations,
 a SAML application catalog, Conditional Access, PIM for groups and directory
 roles, and federation to AWS),
 Azure resource RBAC (custom roles, PIM policies, eligibilities), and AWS IAM
@@ -82,6 +83,8 @@ decision records carry the reasoning that the commits do not.
 | App sign-on policies and rules: factors, re-authentication, phishing-resistant and hardware-protected possession, zones and groups by name, catch-all DENY, single-factor access only with a stated reason | `modules/okta/app-signon-policy` | `okta_app_signon_policy`, `okta_app_signon_policy_rule` |
 | Custom SAML 2.0 apps with signed responses and assertions (RSA-SHA256), typed attribute statements, https-only endpoints, no inline hook, group assignments by name, vendor onboarding values as outputs | `modules/okta/app-saml` | `okta_app_saml`, `okta_app_group_assignments` |
 | OIDC apps typed web, browser, native, or service: grant and response types derived from the type (code only on the redirect-based types, never implicit), PKCE, `private_key_jwt` by default, refresh token rotation, wildcards off, the client secret never in state, group assignments by name | `modules/okta/app-oauth` | `okta_app_oauth`, `okta_app_group_assignments` |
+| Upstream SAML 2.0 identity providers as a map: signed AuthnRequests (SHA-256) and at least SHA-256 on the response signature, https-only issuer and endpoints, one signing key per certificate from the PEM the other side publishes (a comment above the armor is ignored, a second certificate or a private key is refused) with one active kid, a typed subject match, provisioning off unless asked for, account linking on, groups as ids the stack resolves | `modules/okta/idp-saml` | `okta_idp_saml`, `okta_idp_saml_key` |
+| Routing rules on the org's identity provider discovery policy: username or attribute patterns, SAML2 targets by id, a network condition with zones only under `ZONE`, application and platform conditions typed per entry, unique priorities | `modules/okta/idp-routing-rules` | `okta_policy_rule_idp_discovery` |
 | App registrations and service principals with a drift-detection import contract | `modules/entra/app-registration` | `azuread_application`, `azuread_service_principal`, `azuread_application_federated_identity_credential`, `azuread_app_role_assignment` |
 | Named locations, authentication strengths, and Conditional Access policies | `modules/entra/conditional-access` | `azuread_named_location`, `azuread_authentication_strength_policy`, `azuread_conditional_access_policy` |
 | Role-assignable security groups | `modules/entra/security-group` | `azuread_group` |
@@ -116,13 +119,14 @@ decision records carry the reasoning that the commits do not.
 | PIM activation settings of undeclared Azure pairs and Entra directory roles, group eligibility end dates, restricted-offer subscriptions, the runbooks' own source and job health | `automation/runbooks/*` on `automation/lib/Runbook.Common.ps1` | none: Graph, ARM, and Storage calls from Automation jobs, delivered by `stacks/azure-automation` |
 | Entra authentication methods policy (per-method state, targets, and settings; registration campaign; report suspicious activity; system-preferred MFA), groups by display name | `policies/entra/authentication-methods` with `scripts/Set-AuthenticationMethods.ps1` and `automation/runbooks/Invoke-AuthenticationMethodsDrift.ps1` | none: Graph `PATCH` on patch-only singletons; delivered as `azurerm_automation_variable_string` and a pipeline job |
 
-Eleven platform stacks compose those modules into deployable units, with a cell in
+Twelve platform stacks compose those modules into deployable units, with a cell in
 every tenant or partition of their family:
 
 | Stack | Composes | Cells |
 |-------|----------|-------|
 | `stacks/okta-config` | the four Okta policy modules | `tenants/okta/dev/okta-config`, `tenants/okta/prod/okta-config` |
 | `stacks/okta-applications` | the Okta application catalog: app sign-on policies first, then the SAML and OIDC apps bound to a policy by key, with cross-map checks at plan (the policy key exists, an admin-tier app names a phishing-resistant policy, no label twice) | `tenants/okta/dev/okta-applications`, `tenants/okta/prod/okta-applications`, each after the org's `okta-config` cell, whose zones the rules name |
+| `stacks/okta-federation` | Entra as an upstream SAML identity provider for the org: the identity providers and their signing keys first, from a certificate file beside the cell, then the routing rules on the org's `IDP_DISCOVERY` policy that send matched sign-ins to them by key, with groups, zones, and the excluded application resolved by name and label, and cross-map checks at plan (every rule's identity provider is a key of the map, no priority twice, no display name twice) | `tenants/okta/dev/okta-federation`, `tenants/okta/prod/okta-federation`, each after the org's `okta-config` cell, beside `okta-applications` in the same wave |
 | `stacks/entra-app-registrations` | app registrations and service principals with a drift-detection import contract | `tenants/azure/corp/entra-app-registrations` |
 | `stacks/entra-enterprise-apps` | the Entra application catalog over SAML: gallery and custom enterprise applications as values, groups by name, with cross-map checks at plan (no display name, reply URL, or entity id on two apps; a provisioning token only for an app that provisions) | `tenants/azure/corp/entra-enterprise-apps` |
 | `stacks/entra-conditional-access` | named locations, authentication strengths, and Conditional Access policies | `tenants/azure/{corp,subsidiary}/entra-conditional-access` |
@@ -163,7 +167,7 @@ for each cloud, and two app stacks for each.
 ```
 identity-as-code/
   modules/
-    okta/                       network-zone, session-policy, mfa-policy, password-policy, app-signon-policy, app-saml, app-oauth
+    okta/                       network-zone, session-policy, mfa-policy, password-policy, app-signon-policy, app-saml, app-oauth, idp-saml, idp-routing-rules
     entra/                      app registration, SAML enterprise app, Conditional Access, PIM for groups, AWS Identity Center app, and Graph app role grant building blocks
     azure/                      rbac-role-definition, pim-role-policy, pim-eligible-assignment, automation-account, automation-runbooks, workload-role-assignment, backup-storage,
                                 resource-group, managed-identity, key-vault, container-registry, storage-account, subscription-baseline
@@ -172,6 +176,7 @@ identity-as-code/
   stacks/                       units of deployment: compose modules, resolve names to IDs
     okta-config/
     okta-applications/          the Okta catalog: app sign-on policies, SAML and OIDC apps as values (docs/adr/0020)
+    okta-federation/            Entra as an upstream SAML identity provider and the routing rules that send sign-ins to it, as values (docs/adr/0022)
     entra-app-registrations/
     entra-enterprise-apps/      the Entra catalog: SAML enterprise applications, gallery or custom, as values (docs/adr/0021)
     entra-conditional-access/
@@ -209,6 +214,11 @@ identity-as-code/
           signon-policies.hcl   fragment: the signon_policies map, values only, merged into the cell's inputs by Terragrunt (docs/adr/0020)
           saml-apps.hcl         fragment: the saml_apps map
           oauth-apps.hcl        fragment: the oauth_apps map; dev allows a localhost redirect on the console, prod never does
+        okta-federation/
+          terragrunt.hcl        the root include, one labeled include per fragment, the source, the dependency on okta-config, the org
+          identity-providers.hcl  fragment: the identity_providers map, the corp Entra tenant as the upstream identity provider (docs/adr/0022)
+          routing-rules.hcl     fragment: the routing_rules map; dev routes the admin console too, so the whole path is proven first
+          entra-signing-2026.cer  the identity provider's public signing certificate, read by the fragment with file(); a placeholder here
       prod/
         okta-config/terragrunt.hcl
         okta-applications/
@@ -216,6 +226,11 @@ identity-as-code/
           signon-policies.hcl
           saml-apps.hcl         adds the admin-tier vendor console on the phishing-resistant policy
           oauth-apps.hcl        adds the service client, which names no policy
+        okta-federation/
+          terragrunt.hcl
+          identity-providers.hcl  the same identity provider
+          routing-rules.hcl     excludes the Okta Admin Console: the break-glass line, administrators sign in to Okta directly
+          entra-signing-2026.cer
     azure/                      one directory per tenant, one cell per stack inside it
       root.hcl                  Azure Storage state, azurerm + azuread provider generation from ARM_TENANT_ID and the subscription locator, adoption hook
       corp/
@@ -345,7 +360,7 @@ cell says only which region it is. State bucket and OIDC role are per partition
 and arrive through the environment. See
 [ADR 0009](docs/adr/0009-partition-aware-aws-cells.md).
 
-**Three kinds of stack, and addressing lives in locator files.** The eleven
+**Three kinds of stack, and addressing lives in locator files.** The twelve
 stacks above are platform stacks: every tenant of a family has a cell for
 each, and the tenant's values are the only difference. The next requests were
 not tenant-wide: one account needs a role a CI runner can assume, one
@@ -429,6 +444,44 @@ consent Terraform cannot perform, stated rather than faked. After apply,
 metadata URL, and the certificate thumbprint, all built from the provider's
 tenant id and never typed. See
 [ADR 0021](docs/adr/0021-entra-enterprise-applications-as-a-catalog-shape.md).
+
+**Federation between the two identity providers is values and public keys.**
+The two catalogs onboard applications into each provider; `stacks/okta-federation`
+closes the loop between the providers themselves. The corp Entra tenant
+becomes an upstream SAML identity provider for the Okta org (Entra asserts,
+Okta is the service provider) and a routing rule on the org's identity
+provider discovery policy sends workforce sign-ins, the usernames under the
+corp domain, to it. The two sides exchange exactly three values and nothing
+is typed from a console screen twice: the issuer and the signing certificate
+come from Entra, and the audience and the ACS URL go back from the Okta
+cell's `identity_provider_onboarding` output to the `okta-workforce`
+application in the corp `entra-enterprise-apps` cell, which is why the
+trust is built in two applies with one download between them (the stack
+README gives the order). The certificate is the one file a cell carries
+that is not `.hcl`: the identity provider's public signing certificate,
+saved beside the cell as `entra-signing-<year>.cer` and read by the
+fragment with `file()`, the one function call a cell's inputs may hold. It
+is public key material, not a secret; the private half never leaves Entra,
+and the module reads only the text between the `BEGIN` and `END` lines, so
+the file can say where it came from above them. Rotation is a second file
+and a flip of `active_certificate`, coordinated with Entra's "make
+certificate active" step. What the cells cannot choose is fixed in the
+modules: Okta signs every AuthnRequest with SHA-256, the identity
+provider's signature is verified with at least SHA-256, endpoints are https
+with no wildcard, and the routing target is SAML2. Provisioning defaults to
+`DISABLED`, the same line `okta-config` draws (the directory of record
+provisions users; just-in-time creation is opt-in), and account linking
+defaults to `AUTO`. The prod rule excludes the Okta Admin Console, and that
+exclusion is the break-glass line: Okta administrators keep signing in to
+Okta directly with the phishing-resistant factors `okta-config` enrolls, so
+an Entra outage does not lock the org's administrators out; dev carries the
+same rule without the exclusion, so the whole path, console included, is
+proven before prod relies on it. Every zone, group, and application a cell
+names is a name or a label resolved at plan, and the one value that looks
+like an id, the issuer `https://sts.windows.net/<tenant id>/`, is the URL
+Entra publishes as the `<Issuer>` of every response, not an Okta object id.
+See
+[ADR 0022](docs/adr/0022-upstream-identity-providers-are-values-and-public-keys.md).
 
 **The container pair is the worked example of parity.** `apps/aws/orders-api`
 and `apps/azure/orders-api` give one application everything a container
@@ -819,6 +872,13 @@ zero-change gate applied to an object Terraform cannot hold.
   assignments, and token-based provisioning, and stops there; a connector
   such as Google Workspace's is authorised once in the console, and the
   stack README shows the step.
+- Between the two identity providers: OIDC upstream identity providers
+  (`okta_idp_oidc`) and social identity providers in Okta; Okta as the
+  upstream identity provider for Entra (the inverse direction, which Entra
+  calls external identities or direct federation); and the Entra-side
+  `okta-workforce` application's OAuth-consented provisioning connector.
+  The federation stack creates SAML identity providers, their keys, and
+  the routing rules that send sign-ins to them, and stops there.
 - Standing (active) Azure role assignments for people. If a person needs
   standing access, that is a design conversation, not a map entry. The only
   standing grantees are the runbook tier identities, which cannot activate
@@ -973,6 +1033,50 @@ issues the mapped claims with the service principal's own signing key and
 without `acceptMappedClaims`, that the groups claim carries display names,
 and that the group names the cell carries exist before the first plan.
 
+The federation pieces (`modules/okta/idp-saml`, `modules/okta/idp-routing-rules`,
+`stacks/okta-federation`, the two `okta-federation` cells, and the
+`okta-workforce` entry of the corp `entra-enterprise-apps` cell) were
+written with Terraform 1.16 available: both modules and the stack pass
+`terraform init -backend=false` and `terraform validate` against the pinned
+provider (okta/okta 4.20.0, recorded in the committed `.terraform.lock.hcl`
+files), every attribute and block was checked against that version's
+schema, and the meaning of each allowlisted value (subject match types,
+provisioning and account-link actions, signature scopes, pattern match
+types, user identifier types, network connections) was read from the
+provider's registry pages and Okta's Identity Providers API reference and
+cited where a value set is fixed. The refusals were proven with `terraform
+test` and a mocked Okta provider, one run per case: 48 runs on the identity
+provider module (four accepted shapes, one of them applied, asserting that
+each key's `x5c` equals the armor-stripped base64 body computed
+independently, that the identity provider's `kid` is the active entry's and
+not the other, that comment lines above the `BEGIN` line leave the body
+unchanged, and every fixed and defaulted attribute; and 44 refusals each
+confirmed to fail on its own message), 36 on the routing module (one
+accepted apply of two rules and 35 refusals), and 16 on the stack (the
+composition of the worked cells under a mocked identity provider id,
+asserting the trust-specific ACS URL, its `ORG` variant, the audience
+pass-through, and the rule under its key; then a rule naming an identity
+provider key that is not in the map, duplicate priorities and display
+names, zone names on a non-`ZONE` rule, and the other cross-map refusals).
+Both cells were rendered offline with `terragrunt render-json` to confirm
+the state key, the `okta-config` dependency, the four merged input keys,
+and that the rendered `signing_certificates` entry holds the certificate
+file's text, comment lines and armor included; the corp Entra cell was
+rendered the same way and carries three applications. The placeholder
+certificate in each cell was generated with openssl (rsa:2048, ten years)
+with its private key written to the null device, so no key ever existed on
+disk, and the module's mocked plan read it through its comment lines. Those
+harnesses are not committed. What only a live org can confirm: that the
+`ADVANCED_SSO` feature is enabled, since the routing rule resource refuses
+an org without it; that the org's discovery policy is found under the name
+"Idp Discovery Policy" and the admin console under the label "Okta Admin
+Console"; that the audience Okta computes and the ACS URL the stack builds
+are what the Entra application accepts as identifier and reply URL, and
+that the `thumbprint` output matches the Entra cell's certificate
+thumbprint after the first apply; that a workforce sign-in routes through
+Entra and an administrator's sign-in to the admin console does not; and
+that a `max_clock_skew` of 120000 reads as two minutes in the console.
+
 The account and subscription pieces (`modules/aws/iam-service-role`,
 `kms-key`, `s3-bucket`, `account-hardening`, `cloudtrail`, `log-group`,
 `ssm-parameter-namespace`, and `ecr-repository`; `modules/azure/resource-group`,
@@ -1074,7 +1178,8 @@ Terraform binary, `repo_lint.py --all` passes over every file (its first run
 found the two `[string[]]` runbook parameters the automation README had
 excepted, now semicolon strings like every other list, with Pester tests for
 the parsers, and the Pester suite still passes under Windows PowerShell 5.1
-with Pester 3.4.0), and `cells.py` finds the 31 cells in six waves. What
+with Pester 3.4.0), and `cells.py` finds the 33 cells in six waves (the
+six Okta cells in four). What
 only a run on GitHub can confirm: the matrix the AWS and Okta release trains
 read from `cells.py`, the `fromJson` indexing of their wave jobs and the skip
 rules between them (the Okta train's `jq` split of the waves was emulated in
